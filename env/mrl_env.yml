@@ -1,0 +1,21 @@
+name: mrl_env
+
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.10
+  - numpy             # numpy 2.x works fine with the torch version in this env
+  - pandas
+  - scikit-learn
+  - matplotlib
+  - seaborn
+  - conda-forge::umap-learn  # must come from conda-forge — pip install fails on macOS
+                             # (llvmlite/numba need pre-built binaries)
+  - pip
+  - pip:
+    - torch
+    - torchvision
+    - tqdm
+    - scipy           # used for cdist in exp2 cluster metrics
