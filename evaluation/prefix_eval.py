@@ -28,6 +28,11 @@ Inputs:
 Outputs:
     dict mapping prefix k -> accuracy (float in [0, 1])
     e.g. {1: 0.12, 2: 0.18, 4: 0.35, 8: 0.61, 16: 0.79, 32: 0.87, 64: 0.91}
+
+Usage:
+    from evaluation.prefix_eval import run_prefix_eval, run_pca_baseline
+    results = run_prefix_eval(encoder, head, data, cfg, 'standard')
+    python evaluation/prefix_eval.py   # smoke test (random encoder, checks accuracy dict)
 """
 
 from typing import Dict

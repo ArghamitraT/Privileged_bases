@@ -25,6 +25,11 @@ Inputs:
 
 Outputs:
     torch.Tensor of shape (batch_size, input_dim) — reconstructed input
+
+Usage:
+    from models.linear_ae import LinearAutoencoder
+    model = LinearAutoencoder(input_dim=784, embed_dim=64)
+    python models/linear_ae.py   # smoke test (forward pass, orthogonalize, prefix ops)
 """
 
 import torch

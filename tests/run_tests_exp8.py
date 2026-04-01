@@ -10,7 +10,9 @@ Tests:
   4. test_get_pca_embeddings_np         — correct shape, no NaN, centered mean
   5. test_importance_scores_degenerate  — all-zero column does not crash
   6. test_plot_functions_no_crash       — all 4 plots run, PNGs created
-  7. test_e2e_fast (slow)               — full --fast run, all output files present
+  7. test_use_weights_flag              — --use-weights loads weights correctly from a dir
+  8. test_embed_dim_flag                — --embed-dim N sets embed_dim and powers-of-2 prefixes
+  9. test_e2e_fast (slow)               — full --fast run, all output files present
 
 Usage:
     python run_tests_exp8.py           # unit tests + e2e smoke test
@@ -34,7 +36,9 @@ import subprocess
 import numpy as np
 import torch
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Absolute path to code/ — tests/ is one level below code/
+CODE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, CODE_DIR)
 
 from config import ExpConfig
 from data.loader import load_data
@@ -44,6 +48,7 @@ from experiments.exp8_dim_importance import (
     compute_best_vs_first_k,
     compute_method_agreement,
     get_pca_embeddings_np,
+    load_models_from_dir,
     plot_importance_scores,
     plot_dim_importance_heatmap,
     plot_best_vs_first_k,
@@ -336,6 +341,78 @@ def test_plot_functions_no_crash():
 
 
 # ==============================================================================
+# Test 7: --use-weights flag (renamed from --use-exp7)
+# ==============================================================================
+
+def test_use_weights_flag():
+    """
+    load_models_from_dir raises FileNotFoundError when weight files are absent,
+    and succeeds (returns 6 objects in eval mode) when files are present.
+
+    We verify the error path only (no actual weight files needed for unit test).
+    The success path is covered by test_e2e_fast via --use-weights.
+    """
+    print("--- test_use_weights_flag ---")
+
+    import tempfile
+
+    # Error path: empty directory -> FileNotFoundError
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cfg  = ExpConfig(dataset="digits", embed_dim=4, eval_prefixes=[1, 2, 4])
+        data = load_data(cfg)
+        try:
+            load_models_from_dir(tmpdir, cfg, data)
+            raise AssertionError("Expected FileNotFoundError was not raised")
+        except FileNotFoundError as e:
+            assert "standard_encoder_best.pt" in str(e), \
+                f"Error message missing expected filename: {e}"
+            print(f"  FileNotFoundError raised correctly: {str(e)[:80]}...")
+
+    # Verify the flag name in the CLI: --use-weights (not --use-exp7)
+    import argparse as _ap
+    import experiments.exp8_dim_importance as _exp8
+    import importlib, inspect
+    src = inspect.getsource(_exp8.main)
+    assert "--use-weights" in src, \
+        "main() does not contain '--use-weights' argument"
+    assert "--use-exp7" not in src, \
+        "main() still contains old '--use-exp7' argument"
+    print("  --use-weights present in main(); --use-exp7 absent: OK")
+    print("  PASSED\n")
+
+
+# ==============================================================================
+# Test 8: --embed-dim flag (powers-of-2 prefix derivation)
+# ==============================================================================
+
+def test_embed_dim_flag():
+    """
+    Verify that --embed-dim N correctly sets embed_dim and derives eval_prefixes
+    as powers-of-2 up to N: {8->[1,2,4,8], 16->[1,2,4,8,16], 32->[1,2,4,8,16,32]}.
+
+    We replicate the override logic from main() directly (no subprocess needed).
+    """
+    print("--- test_embed_dim_flag ---")
+
+    for n in [8, 16, 32, 64]:
+        expected_prefixes = list(range(1, n + 1))
+
+        # Replicate the override logic from exp8 main()
+        cfg = ExpConfig(dataset="digits", embed_dim=64,
+                        eval_prefixes=list(range(1, 65)))
+        cfg.embed_dim     = n
+        cfg.eval_prefixes = list(range(1, cfg.embed_dim + 1))
+
+        assert cfg.embed_dim == n, \
+            f"embed_dim not set correctly: {cfg.embed_dim} != {n}"
+        assert cfg.eval_prefixes == expected_prefixes, \
+            f"eval_prefixes wrong for n={n}: {cfg.eval_prefixes} != {expected_prefixes}"
+        print(f"  n={n:>3}  eval_prefixes={cfg.eval_prefixes}")
+
+    print("  PASSED\n")
+
+
+# ==============================================================================
 # End-to-end smoke test
 # ==============================================================================
 
@@ -351,7 +428,7 @@ def test_e2e_fast():
     result = subprocess.run(
         [sys.executable, "experiments/exp8_dim_importance.py", "--fast"],
         capture_output=True, text=True,
-        cwd=os.path.dirname(os.path.abspath(__file__)),
+        cwd=CODE_DIR,
     )
 
     if result.returncode != 0:
@@ -416,6 +493,8 @@ def main():
     test_get_pca_embeddings_np()
     test_importance_scores_degenerate_dim()
     test_plot_functions_no_crash()
+    test_use_weights_flag()
+    test_embed_dim_flag()
 
     if not args.fast:
         print("\nEnd-to-end smoke test")

@@ -23,8 +23,11 @@ import argparse
 import numpy as np
 import torch
 
-# Allow imports from the project root
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Absolute path to code/ — tests/ is one level below code/
+CODE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+# Allow imports from the project root (code/)
+sys.path.insert(0, CODE_DIR)
 
 from config import ExpConfig
 from data.loader import load_data
@@ -39,6 +42,9 @@ from experiments.exp2_cluster_viz import (
     compute_cluster_metrics,
     get_neural_embeddings,
     get_pca_full_embeddings,
+    plot_4d_animation,
+    plot_4d_interactive,
+    plot_4d_slideshow,
 )
 
 
@@ -206,6 +212,119 @@ def test_get_pca_embeddings():
     print("  PASSED\n")
 
 
+def test_plot_4d_animation(tmp_dir: str):
+    """
+    plot_4d_animation creates a non-empty GIF file for a tiny synthetic dataset.
+
+    Uses 2 classes, 20 points, and 8-dim embeddings so the test runs quickly.
+
+    Args:
+        tmp_dir (str): Temporary output directory for the GIF.
+    """
+    print("--- test_plot_4d_animation ---")
+
+    np.random.seed(0)
+    n_points = 20
+    embed_dim = 8
+
+    # Synthetic embeddings: 2 classes, 3 models
+    model_embeddings = {
+        "Standard":   np.random.randn(n_points, embed_dim).astype(np.float32),
+        "Matryoshka": np.random.randn(n_points, embed_dim).astype(np.float32),
+        "PCA":        np.random.randn(n_points, embed_dim).astype(np.float32),
+    }
+    y_viz   = np.array([0] * 10 + [1] * 10)
+    viz_idx = np.arange(n_points)
+
+    plot_4d_animation(model_embeddings, y_viz, viz_idx, tmp_dir, dims=[0, 1, 2, 3], fps=2)
+
+    out_path = os.path.join(tmp_dir, "dim4_animation.gif")
+    assert os.path.isfile(out_path), "dim4_animation.gif was not created"
+    assert os.path.getsize(out_path) > 0, "dim4_animation.gif is empty"
+
+    print(f"  GIF size: {os.path.getsize(out_path)} bytes")
+    print("  PASSED\n")
+
+
+def test_plot_4d_interactive(tmp_dir: str):
+    """
+    plot_4d_interactive creates a non-empty HTML file for a tiny synthetic dataset.
+
+    Skips gracefully if plotly is not installed.
+
+    Args:
+        tmp_dir (str): Temporary output directory for the HTML.
+    """
+    print("--- test_plot_4d_interactive ---")
+
+    try:
+        import plotly  # noqa: F401
+    except ImportError:
+        print("  SKIPPED (plotly not installed)\n")
+        return
+
+    np.random.seed(1)
+    n_points = 20
+    embed_dim = 8
+
+    model_embeddings = {
+        "Standard":   np.random.randn(n_points, embed_dim).astype(np.float32),
+        "Matryoshka": np.random.randn(n_points, embed_dim).astype(np.float32),
+        "PCA":        np.random.randn(n_points, embed_dim).astype(np.float32),
+    }
+    y_viz   = np.array([0] * 10 + [1] * 10)
+    viz_idx = np.arange(n_points)
+
+    plot_4d_interactive(model_embeddings, y_viz, viz_idx, tmp_dir, dims=[0, 1, 2, 3])
+
+    out_path = os.path.join(tmp_dir, "dim4_interactive.html")
+    assert os.path.isfile(out_path), "dim4_interactive.html was not created"
+    assert os.path.getsize(out_path) > 0, "dim4_interactive.html is empty"
+
+    print(f"  HTML size: {os.path.getsize(out_path)} bytes")
+    print("  PASSED\n")
+
+
+def test_plot_4d_slideshow(tmp_dir: str):
+    """
+    plot_4d_slideshow creates a non-empty self-contained HTML file for a tiny
+    synthetic dataset.  Also checks that the file contains base64 PNG data and
+    the Prev/Next button markup.
+
+    Args:
+        tmp_dir (str): Temporary output directory for the HTML.
+    """
+    print("--- test_plot_4d_slideshow ---")
+
+    np.random.seed(0)
+    n_points  = 20
+    embed_dim = 8
+    model_embeddings = {
+        "Standard":    np.random.randn(n_points, embed_dim),
+        "Matryoshka":  np.random.randn(n_points, embed_dim),
+        "PCA":         np.random.randn(n_points, embed_dim),
+    }
+    y_viz   = np.array([0] * 10 + [1] * 10)
+    viz_idx = np.arange(n_points)
+
+    plot_4d_slideshow(model_embeddings, y_viz, viz_idx, tmp_dir, dims=[0, 1, 2, 3])
+
+    out_path = os.path.join(tmp_dir, "dim4_slideshow.html")
+    assert os.path.isfile(out_path),      "dim4_slideshow.html was not created"
+    assert os.path.getsize(out_path) > 0, "dim4_slideshow.html is empty"
+
+    # Verify the HTML contains embedded PNG data and button markup
+    with open(out_path) as fh:
+        content = fh.read()
+    assert "data:image/png;base64," in content, \
+        "Slideshow HTML is missing embedded base64 PNG data"
+    assert "Prev" in content and "Next" in content, \
+        "Slideshow HTML is missing Prev/Next button text"
+
+    print(f"  HTML size: {os.path.getsize(out_path)} bytes")
+    print("  PASSED\n")
+
+
 # ==============================================================================
 # End-to-end smoke test
 # ==============================================================================
@@ -219,7 +338,7 @@ def test_e2e_smoke():
     import subprocess
     import glob
 
-    script = os.path.join(os.path.dirname(__file__), "experiments", "exp2_cluster_viz.py")
+    script = os.path.join(CODE_DIR, "experiments", "exp2_cluster_viz.py")
 
     result = subprocess.run(
         [sys.executable, script, "--fast"],
@@ -273,6 +392,10 @@ def main():
     print("run_tests_exp2.py — Experiment 2 test suite")
     print("=" * 60 + "\n")
 
+    # Temp dir for tests that write output files
+    import tempfile
+    tmp_dir = tempfile.mkdtemp(prefix="exp2_test_")
+
     # --- Unit tests (always run) ---
     print("Unit tests\n" + "-" * 40)
     test_subsample_indices()
@@ -284,6 +407,9 @@ def main():
     test_compute_cluster_metrics_degenerate()
     test_get_neural_embeddings()
     test_get_pca_embeddings()
+    test_plot_4d_animation(tmp_dir)
+    test_plot_4d_interactive(tmp_dir)
+    test_plot_4d_slideshow(tmp_dir)
 
     if args.fast:
         print("=" * 60)

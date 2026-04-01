@@ -28,6 +28,11 @@ Outputs:
         'train_losses' : list of per-epoch training losses
         'val_losses'   : list of per-epoch validation losses
         'best_epoch'   : epoch index (0-based) where best val loss was achieved
+
+Usage:
+    from training.trainer import train
+    history = train(encoder, head, criterion, optimiser, data, cfg, run_dir, 'standard')
+    python training/trainer.py   # smoke test (trains 2 epochs on random data)
 """
 
 import os

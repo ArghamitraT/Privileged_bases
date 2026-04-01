@@ -22,19 +22,30 @@ Three analyses:
        High rho → importance is robustly measurable.
 
 Inputs:
-  --fast       : smoke test — digits, embed_dim=16, 5 epochs, 500 probe samples
-  --use-exp7   : path to exp7 run folder; loads Standard/L1/MRL weights
+  --fast            : smoke test — digits, embed_dim=16, 5 epochs, 500 probe samples
+  --use-weights     : path to exp7 or exp10 run folder; loads Standard/L1/MRL weights
+  --embed-dim N     : override embed_dim (8, 16, 32, 64); derives eval_prefixes automatically
 
 Outputs (all in a new timestamped run folder):
   importance_scores.png       : per-dim bar charts, 3 methods x 4 models
   dim_importance_heatmap.png  : heatmap models x dims, one panel per method
   best_vs_first_k.png         : first-k vs best-k accuracy curves per model
   method_agreement.png        : scatter plots + Spearman rho per model x pair
-  training_curves.png         : loss vs epoch (MANDATORY; placeholder if --use-exp7)
+  training_curves.png         : loss vs epoch (MANDATORY; placeholder if --use-weights)
   results_summary.txt
   experiment_description.log
   runtime.txt
   code_snapshot/
+
+Usage:
+    python experiments/exp8_dim_importance.py --fast                       # smoke test (digits, 5 epochs)
+    python experiments/exp8_dim_importance.py                              # full run (MNIST, 20 epochs)
+    python experiments/exp8_dim_importance.py --use-weights PATH           # load weights, no retrain
+    python experiments/exp8_dim_importance.py --embed-dim 8 --use-weights PATH   # at dim=8
+    python experiments/exp8_dim_importance.py --embed-dim 16 --use-weights PATH  # at dim=16
+    python experiments/exp8_dim_importance.py --embed-dim 32 --use-weights PATH  # at dim=32
+    python tests/run_tests_exp8.py --fast                                  # unit tests only
+    python tests/run_tests_exp8.py                                         # unit tests + e2e smoke
 """
 
 import os
@@ -127,15 +138,15 @@ def set_seeds(seed: int):
 # Experiment description log
 # ==============================================================================
 
-def save_experiment_description(cfg, run_dir, exp7_weights_dir, fast):
+def save_experiment_description(cfg, run_dir, weights_dir, fast):
     """
     Write a human-readable log describing this experiment run.
 
     Args:
-        cfg              (ExpConfig)  : Experiment configuration.
-        run_dir          (str)        : Output directory for this run.
-        exp7_weights_dir (str | None) : Path to loaded exp7 weights, or None.
-        fast             (bool)       : Whether fast/smoke mode is active.
+        cfg         (ExpConfig)  : Experiment configuration.
+        run_dir     (str)        : Output directory for this run.
+        weights_dir (str | None) : Path to loaded weights (exp7 or exp10), or None.
+        fast        (bool)       : Whether fast/smoke mode is active.
     """
     log_path = os.path.join(run_dir, "experiment_description.log")
     with open(log_path, "w") as f:
@@ -183,8 +194,8 @@ def save_experiment_description(cfg, run_dir, exp7_weights_dir, fast):
 
         f.write("WEIGHTS SOURCE\n")
         f.write("-" * 40 + "\n")
-        if exp7_weights_dir:
-            f.write(f"  Loaded from exp7 run: {exp7_weights_dir}\n\n")
+        if weights_dir:
+            f.write(f"  Loaded from: {weights_dir}\n\n")
         else:
             f.write("  Trained from scratch in this run.\n\n")
         f.write(f"  Fast mode: {fast}\n\n")
@@ -423,18 +434,17 @@ def compute_method_agreement(importance_scores, model_tag):
 # Weight loading from a saved exp7 run
 # ==============================================================================
 
-def load_models_from_exp7(exp7_dir, cfg, data):
+def load_models_from_dir(weights_dir, cfg, data):
     """
-    Load Standard, L1, and MRL encoder+head weights from a saved exp7 run folder.
+    Load Standard, L1, and MRL encoder+head weights from a saved run folder.
 
-    Expects files: standard_encoder_best.pt, standard_head_best.pt,
-                   l1_encoder_best.pt, l1_head_best.pt,
-                   mat_encoder_best.pt, mat_head_best.pt.
+    Accepts output directories from either exp7 or exp10 — weight filenames
+    are identical: standard_encoder_best.pt, l1_encoder_best.pt, mat_encoder_best.pt.
 
     Args:
-        exp7_dir (str)       : Path to exp7 output folder.
-        cfg      (ExpConfig) : Used to build matching architecture.
-        data     (DataSplit) : Used for input_dim and n_classes.
+        weights_dir (str)       : Path to exp7 or exp10 output folder.
+        cfg         (ExpConfig) : Used to build matching architecture.
+        data        (DataSplit) : Used for input_dim and n_classes.
 
     Returns:
         Tuple: (std_encoder, std_head, l1_encoder, l1_head, mat_encoder, mat_head)
@@ -449,23 +459,23 @@ def load_models_from_exp7(exp7_dir, cfg, data):
         "mat_encoder_best.pt",      "mat_head_best.pt",
     ]
     for fname in expected:
-        fpath = os.path.join(exp7_dir, fname)
+        fpath = os.path.join(weights_dir, fname)
         if not os.path.isfile(fpath):
             raise FileNotFoundError(
-                f"Expected exp7 weight file not found: {fpath}\n"
-                "Make sure --use-exp7 points to a valid exp7 output folder."
+                f"Expected weight file not found: {fpath}\n"
+                "Make sure --use-weights points to a valid exp7 or exp10 output folder."
             )
 
     def _load(enc_file, head_file):
         enc  = MLPEncoder(data.input_dim, cfg.hidden_dim, cfg.embed_dim)
         head = build_head(cfg, data.n_classes)
-        enc.load_state_dict( torch.load(os.path.join(exp7_dir, enc_file),  map_location="cpu"))
-        head.load_state_dict(torch.load(os.path.join(exp7_dir, head_file), map_location="cpu"))
+        enc.load_state_dict( torch.load(os.path.join(weights_dir, enc_file),  map_location="cpu"))
+        head.load_state_dict(torch.load(os.path.join(weights_dir, head_file), map_location="cpu"))
         enc.eval()
         head.eval()
         return enc, head
 
-    print(f"[exp8] Loading exp7 weights from {exp7_dir}")
+    print(f"[exp8] Loading weights from {weights_dir}")
     std_enc, std_hd = _load("standard_encoder_best.pt", "standard_head_best.pt")
     l1_enc,  l1_hd  = _load("l1_encoder_best.pt",       "l1_head_best.pt")
     mat_enc, mat_hd = _load("mat_encoder_best.pt",       "mat_head_best.pt")
@@ -481,7 +491,7 @@ def plot_training_curves(run_dir, model_tags):
     """
     Parse training log files and plot train/val loss vs epoch.
 
-    If no log files are found (e.g. --use-exp7 skips training), saves a
+    If no log files are found (e.g. --use-weights skips training), saves a
     placeholder PNG so the mandatory training_curves.png is always present.
 
     Args:
@@ -507,11 +517,11 @@ def plot_training_curves(run_dir, model_tags):
         if train_losses:
             histories[tag] = {"train": train_losses, "val": val_losses}
 
-    # Placeholder when no training logs exist (--use-exp7 mode)
+    # Placeholder when no training logs exist (--use-weights mode)
     if not histories:
         fig, ax = plt.subplots(figsize=(6, 3))
         ax.text(0.5, 0.5,
-                "Weights loaded from exp7 —\nno training curves for this run.",
+                "Weights loaded from existing run —\nno training curves for this run.",
                 ha="center", va="center", fontsize=12, transform=ax.transAxes)
         ax.axis("off")
         plt.tight_layout()
@@ -895,7 +905,7 @@ def main():
       2.  Set seeds, create run_dir
       3.  Save experiment_description.log
       4.  Load data
-      5.  Train Standard/L1/MRL OR load weights from --use-exp7
+      5.  Train Standard/L1/MRL OR load weights from --use-weights
       6.  Plot training_curves.png (MANDATORY)
       7.  Extract embeddings for all 4 models (Standard, L1, MRL, PCA)
       8.  Analysis 1: compute_importance_scores for each model
@@ -916,8 +926,12 @@ def main():
         help="Smoke test: digits, embed_dim=16, 5 epochs, 500 probe samples.",
     )
     parser.add_argument(
-        "--use-exp7", type=str, default=None, metavar="PATH",
-        help="Path to exp7 output folder; load Standard/L1/MRL weights (no retraining).",
+        "--use-weights", type=str, default=None, metavar="PATH",
+        help="Path to exp7 or exp10 output folder; load Standard/L1/MRL weights (no retraining).",
+    )
+    parser.add_argument(
+        "--embed-dim", type=int, default=None, metavar="N",
+        help="Override embed_dim (8, 16, 32, 64); eval_prefixes derived as powers-of-2 up to N.",
     )
     args = parser.parse_args()
 
@@ -945,6 +959,7 @@ def main():
             hidden_dim=256,
             head_mode="shared_head",
             eval_prefixes=[1, 2, 4, 8, 16, 32, 64],
+            # eval_prefixes=list(range(1, 65)),
             epochs=20,
             patience=5,
             seed=42,
@@ -953,15 +968,24 @@ def main():
         )
         max_probe_samples = 2000
 
+    # Apply --embed-dim override: set embed_dim and use dense prefixes [1..N].
+    # Dense matches exp10's eval convention; powers-of-2 would disagree with
+    # the weights that exp10 produced.
+    if args.embed_dim is not None:
+        cfg.embed_dim     = args.embed_dim
+        cfg.eval_prefixes = list(range(1, cfg.embed_dim + 1))
+        print(f"[exp8] --embed-dim override: embed_dim={cfg.embed_dim}, "
+              f"eval_prefixes=1..{cfg.embed_dim}")
+
     set_seeds(cfg.seed)
-    exp7_dir = args.use_exp7  # None or string path
+    weights_dir = args.use_weights  # None or string path
 
     # ------------------------------------------------------------------
     # Step 3: Setup output directory + save description
     # ------------------------------------------------------------------
     run_dir = create_run_dir()
     print(f"[exp8] Outputs will be saved to: {run_dir}\n")
-    save_experiment_description(cfg, run_dir, exp7_dir, args.fast)
+    save_experiment_description(cfg, run_dir, weights_dir, args.fast)
 
     # ------------------------------------------------------------------
     # Step 4: Load data
@@ -972,14 +996,14 @@ def main():
     data = load_data(cfg)
 
     # ------------------------------------------------------------------
-    # Step 5: Get models (train from scratch OR load from exp7)
+    # Step 5: Get models (train from scratch OR load from --use-weights dir)
     # ------------------------------------------------------------------
-    if exp7_dir:
+    if weights_dir:
         print("=" * 60)
-        print("STEP 5: Loading weights from exp7")
+        print("STEP 5: Loading weights from existing run")
         print("=" * 60)
         std_encoder, std_head, l1_encoder, l1_head, mat_encoder, mat_head = \
-            load_models_from_exp7(exp7_dir, cfg, data)
+            load_models_from_dir(weights_dir, cfg, data)
     else:
         print("=" * 60)
         print("STEP 5a: Training Standard model")

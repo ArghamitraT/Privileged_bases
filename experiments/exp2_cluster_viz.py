@@ -39,6 +39,13 @@ Outputs (all saved in a new timestamped run folder):
   experiment_description.log
   runtime.txt
   code_snapshot/
+
+Usage:
+    python experiments/exp2_cluster_viz.py --use-exp1         # load exp1 weights, full MNIST
+    python experiments/exp2_cluster_viz.py --use-exp1 --fast  # load exp1 weights, subsampled
+    python experiments/exp2_cluster_viz.py --fast             # train from scratch on digits
+    python tests/run_tests_exp2.py --fast                     # unit tests only
+    python tests/run_tests_exp2.py                            # unit tests + e2e smoke
 """
 
 import os
@@ -812,6 +819,476 @@ def plot_combined_summary(
 
 
 # ==============================================================================
+# 4D Visualization: Animated GIF + Interactive HTML
+# ==============================================================================
+
+def plot_4d_animation(
+    model_embeddings: dict,
+    y_viz: np.ndarray,
+    viz_idx: np.ndarray,
+    run_dir: str,
+    dims: list = None,
+    fps: int = 1,
+):
+    """
+    Create an animated GIF cycling through all 6 pairwise 2D scatter plots of
+    4 embedding dimensions for Standard, Matryoshka, and PCA models.
+
+    Each of the C(4,2)=6 frames shows one dim pair as a scatter plot. All three
+    models are displayed side-by-side per frame so class separability can be
+    compared across dim pairs and across models at the same time.
+
+    Args:
+        model_embeddings (dict)      : Keys 'Standard', 'Matryoshka', 'PCA' ->
+                                       np.ndarray (n_test, embed_dim).
+        y_viz            (np.ndarray): Shape (n_viz,) — class labels for viz points.
+        viz_idx          (np.ndarray): Indices used to subsample full embeddings.
+        run_dir          (str)       : Where to save dim4_animation.gif.
+        dims             (list)      : 4 dimension indices to animate. Default [0,1,2,3].
+        fps              (int)       : Frames per second in the output GIF.
+
+    Returns:
+        None. Saves dim4_animation.gif to run_dir.
+    """
+    from itertools import combinations
+    import matplotlib.animation as animation
+
+    if dims is None:
+        dims = [0, 1, 2, 3]
+
+    dim_pairs   = list(combinations(dims, 2))   # C(4,2) = 6 pairs
+    model_names = ["Standard", "Matryoshka", "PCA"]
+
+    # Extract subsampled embeddings for each model
+    emb_viz = {name: model_embeddings[name][viz_idx] for name in model_names}
+
+    unique_labels = np.unique(y_viz)
+    n_cls         = len(unique_labels)
+    colors        = _get_class_colors(n_cls)
+
+    plt.style.use("seaborn-v0_8-whitegrid")
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    fig.patch.set_facecolor("white")
+
+    def _draw_frame(frame_idx):
+        """Render one frame: scatter of dim-pair (di, dj) for all 3 models."""
+        di, dj = dim_pairs[frame_idx]
+        for ax, model_name in zip(axes, model_names):
+            ax.cla()
+            emb = emb_viz[model_name]
+            for cls_idx, cls in enumerate(unique_labels):
+                mask = y_viz == cls
+                ax.scatter(
+                    emb[mask, di], emb[mask, dj],
+                    s=6, alpha=0.75, color=colors[cls_idx], linewidths=0,
+                )
+            ax.set_xlabel(f"Dim {di}", fontsize=11)
+            ax.set_ylabel(f"Dim {dj}", fontsize=11)
+            ax.set_title(model_name, fontsize=12, fontweight="bold")
+            ax.set_facecolor("#f5f5f5")
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+        # Shared class legend at the bottom
+        handles = [
+            plt.Line2D([0], [0], marker="o", color="w",
+                       markerfacecolor=colors[i], markersize=8,
+                       label=str(int(c)))
+            for i, c in enumerate(unique_labels)
+        ]
+        fig.legend(handles=handles, title="Class",
+                   loc="lower center", ncol=min(n_cls, 10),
+                   fontsize=8, bbox_to_anchor=(0.5, -0.08))
+        fig.suptitle(
+            f"4D Embedding  (dims {dims})   —   "
+            f"Frame {frame_idx + 1}/{len(dim_pairs)}: Dim {di} vs Dim {dj}",
+            fontsize=13, y=1.02,
+        )
+        plt.tight_layout(rect=[0, 0.07, 1, 1])
+
+    ani = animation.FuncAnimation(
+        fig, _draw_frame, frames=len(dim_pairs),
+        interval=int(1000 / fps), repeat=True,
+    )
+
+    out_path = os.path.join(run_dir, "dim4_animation.gif")
+    try:
+        writer = animation.PillowWriter(fps=fps)
+        ani.save(out_path, writer=writer, dpi=100)
+        print(f"[exp2] Saved dim4_animation.gif  ({len(dim_pairs)} frames, dims={dims})")
+    except Exception as exc:
+        print(f"[exp2] Warning: could not save GIF — {exc}. Is Pillow installed?")
+    finally:
+        plt.close()
+
+
+def plot_4d_interactive(
+    model_embeddings: dict,
+    y_viz: np.ndarray,
+    viz_idx: np.ndarray,
+    run_dir: str,
+    dims: list = None,
+):
+    """
+    Create an interactive HTML file with 3D scatter subplots for Standard,
+    Matryoshka, and PCA embeddings using 4 embedding dimensions.
+
+    Each subplot shows 3 of the 4 chosen dimensions as 3D axes (x, y, z),
+    colored by class label. A dropdown menu cycles through all C(4,3)=4
+    combinations so the user can inspect every 3D projection. All subplots
+    are fully rotatable in the browser — no extra software required.
+
+    Requires plotly (already in mrl_env). Skipped gracefully if not installed.
+
+    Args:
+        model_embeddings (dict)      : Keys 'Standard', 'Matryoshka', 'PCA' ->
+                                       np.ndarray (n_test, embed_dim).
+        y_viz            (np.ndarray): Shape (n_viz,) — class labels for viz points.
+        viz_idx          (np.ndarray): Indices used to subsample full embeddings.
+        run_dir          (str)       : Where to save dim4_interactive.html.
+        dims             (list)      : 4 dimension indices to use. Default [0,1,2,3].
+
+    Returns:
+        None. Saves dim4_interactive.html to run_dir (or logs a warning if plotly missing).
+    """
+    try:
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+    except ImportError:
+        print(
+            "[exp2] plotly not installed — skipping dim4_interactive.html.\n"
+            "       Install with: pip install plotly"
+        )
+        return
+
+    from itertools import combinations
+
+    if dims is None:
+        dims = [0, 1, 2, 3]
+
+    # C(4,3) = 4 combinations: (0,1,2), (0,1,3), (0,2,3), (1,2,3)
+    dim_combos  = list(combinations(dims, 3))
+    model_names = ["Standard", "Matryoshka", "PCA"]
+    n_models    = len(model_names)
+
+    unique_labels = np.unique(y_viz)
+    n_cls         = len(unique_labels)
+    mpl_colors    = _get_class_colors(n_cls)
+
+    # Convert matplotlib RGBA tuples → plotly hex colour strings
+    plotly_colors = [
+        "#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255))
+        for r, g, b, _ in mpl_colors
+    ]
+
+    # Subsampled embeddings
+    emb_viz = {name: model_embeddings[name][viz_idx] for name in model_names}
+
+    # ------------------------------------------------------------------
+    # Build subplot figure: 1 row × 3 cols, all 3D scatter scenes
+    # ------------------------------------------------------------------
+    fig = make_subplots(
+        rows=1, cols=3,
+        specs=[[{"type": "scatter3d"}] * 3],
+        subplot_titles=model_names,
+        horizontal_spacing=0.02,
+    )
+
+    # Initial dim combo drives the first render
+    di0, dj0, dk0 = dim_combos[0]
+
+    # Add all traces using the initial combo
+    for col_idx, model_name in enumerate(model_names):
+        emb = emb_viz[model_name]
+        for cls_idx, cls in enumerate(unique_labels):
+            mask = y_viz == cls
+            fig.add_trace(
+                go.Scatter3d(
+                    x=emb[mask, di0].tolist(),
+                    y=emb[mask, dj0].tolist(),
+                    z=emb[mask, dk0].tolist(),
+                    mode="markers",
+                    marker=dict(size=2, color=plotly_colors[cls_idx], opacity=0.7),
+                    name=f"Class {int(cls)}",
+                    legendgroup=f"class_{int(cls)}",
+                    showlegend=(col_idx == 0),  # legend entries only from first subplot
+                ),
+                row=1, col=col_idx + 1,
+            )
+
+    # ------------------------------------------------------------------
+    # Build dropdown buttons — each button restyles all traces with new
+    # x, y, z data for the chosen 3-dim combo
+    # ------------------------------------------------------------------
+    buttons = []
+    for di, dj, dk in dim_combos:
+        # Collect new x,y,z for every trace in the same order they were added
+        x_data, y_data, z_data = [], [], []
+        for model_name in model_names:
+            emb = emb_viz[model_name]
+            for cls in unique_labels:
+                mask = y_viz == cls
+                x_data.append(emb[mask, di].tolist())
+                y_data.append(emb[mask, dj].tolist())
+                z_data.append(emb[mask, dk].tolist())
+
+        buttons.append(dict(
+            label=f"Dims  {di}, {dj}, {dk}",
+            method="restyle",
+            args=[{"x": x_data, "y": y_data, "z": z_data}],
+        ))
+
+    # ------------------------------------------------------------------
+    # Layout: dropdown, title, initial axis labels
+    # ------------------------------------------------------------------
+    fig.update_layout(
+        updatemenus=[dict(
+            type="dropdown",
+            direction="down",
+            buttons=buttons,
+            showactive=True,
+            x=0.0, xanchor="left",
+            y=1.18, yanchor="top",
+            pad={"r": 10, "t": 10},
+            bgcolor="white",
+            bordercolor="#cccccc",
+        )],
+        title=dict(
+            text=(
+                "4D Embedding — First 4 Dims  "
+                "<span style='font-size:13px;color:#666'>"
+                "(rotate subplots freely · use dropdown to change dimension view)"
+                "</span>"
+            ),
+            font=dict(size=16),
+            x=0.5,
+        ),
+        legend=dict(title="Class", itemsizing="constant"),
+        height=650,
+        margin=dict(t=130, b=20, l=10, r=10),
+    )
+
+    # Set initial axis labels on all 3 scenes
+    fig.update_scenes(
+        xaxis_title=f"Dim {di0}",
+        yaxis_title=f"Dim {dj0}",
+        zaxis_title=f"Dim {dk0}",
+    )
+
+    out_path = os.path.join(run_dir, "dim4_interactive.html")
+    fig.write_html(out_path, include_plotlyjs="cdn")
+    print("[exp2] Saved dim4_interactive.html  —  open in browser to rotate 3D plots")
+
+
+def plot_4d_slideshow(
+    model_embeddings: dict,
+    y_viz: np.ndarray,
+    viz_idx: np.ndarray,
+    run_dir: str,
+    dims: list = None,
+):
+    """
+    Create a self-contained HTML slideshow of the same 6 pairwise 2D scatter
+    frames as dim4_animation.gif, but navigated manually via Prev / Next buttons
+    instead of auto-playing.  A Play button with an adjustable speed slider is
+    also provided for convenience.
+
+    Each frame is rendered by matplotlib, encoded as a base64 PNG, and embedded
+    directly in the HTML — no external dependencies, works offline.
+
+    Args:
+        model_embeddings (dict)      : Keys 'Standard', 'Matryoshka', 'PCA' ->
+                                       np.ndarray (n_test, embed_dim).
+        y_viz            (np.ndarray): Shape (n_viz,) — class labels for viz points.
+        viz_idx          (np.ndarray): Indices used to subsample full embeddings.
+        run_dir          (str)       : Where to save dim4_slideshow.html.
+        dims             (list)      : 4 dimension indices to use. Default [0,1,2,3].
+
+    Returns:
+        None. Saves dim4_slideshow.html to run_dir.
+    """
+    import io
+    import base64
+    import json
+    from itertools import combinations
+
+    if dims is None:
+        dims = [0, 1, 2, 3]
+
+    dim_pairs   = list(combinations(dims, 2))   # C(4,2) = 6 frames
+    model_names = ["Standard", "Matryoshka", "PCA"]
+    emb_viz     = {name: model_embeddings[name][viz_idx] for name in model_names}
+
+    unique_labels = np.unique(y_viz)
+    n_cls         = len(unique_labels)
+    colors        = _get_class_colors(n_cls)
+
+    # ------------------------------------------------------------------
+    # Render each frame to a base64-encoded PNG
+    # ------------------------------------------------------------------
+    plt.style.use("seaborn-v0_8-whitegrid")
+    frame_b64    = []
+    frame_titles = []
+
+    for frame_idx, (di, dj) in enumerate(dim_pairs):
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        fig.patch.set_facecolor("white")
+
+        for ax, model_name in zip(axes, model_names):
+            emb = emb_viz[model_name]
+            for cls_idx, cls in enumerate(unique_labels):
+                mask = y_viz == cls
+                ax.scatter(
+                    emb[mask, di], emb[mask, dj],
+                    s=6, alpha=0.75, color=colors[cls_idx], linewidths=0,
+                )
+            ax.set_xlabel(f"Dim {di}", fontsize=11)
+            ax.set_ylabel(f"Dim {dj}", fontsize=11)
+            ax.set_title(model_name, fontsize=12, fontweight="bold")
+            ax.set_facecolor("#f5f5f5")
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+        # Shared class legend at the bottom
+        handles = [
+            plt.Line2D([0], [0], marker="o", color="w",
+                       markerfacecolor=colors[i], markersize=8,
+                       label=str(int(c)))
+            for i, c in enumerate(unique_labels)
+        ]
+        fig.legend(handles=handles, title="Class",
+                   loc="lower center", ncol=min(n_cls, 10),
+                   fontsize=8, bbox_to_anchor=(0.5, -0.08))
+        fig.suptitle(
+            f"4D Embedding  (dims {dims})   —   "
+            f"Frame {frame_idx + 1}/{len(dim_pairs)}: Dim {di} vs Dim {dj}",
+            fontsize=13,
+        )
+        plt.tight_layout(rect=[0, 0.07, 1, 1])
+
+        # Encode to base64 PNG in memory
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
+        plt.close(fig)
+        buf.seek(0)
+        frame_b64.append(base64.b64encode(buf.read()).decode("ascii"))
+        frame_titles.append(
+            f"Frame {frame_idx + 1}/{len(dim_pairs)}: Dim {di} vs Dim {dj}"
+        )
+
+    # ------------------------------------------------------------------
+    # Build self-contained HTML with Prev / Next / Play controls
+    # ------------------------------------------------------------------
+    n_frames   = len(dim_pairs)
+    frames_js  = json.dumps(frame_b64)
+    titles_js  = json.dumps(frame_titles)
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>4D Embedding Slideshow</title>
+  <style>
+    body        {{ font-family: Arial, sans-serif; background: #f8f8f8;
+                  text-align: center; padding: 20px; }}
+    h2          {{ color: #333; margin-bottom: 4px; }}
+    #frame-title{{ font-size: 1.1em; color: #444; margin: 6px 0 2px; }}
+    #counter    {{ font-size: 0.9em;  color: #888; margin-bottom: 10px; }}
+    #slide-img  {{ max-width: 100%; border: 1px solid #ddd;
+                  border-radius: 4px; background: white; }}
+    .btn        {{ font-size: 1.05em; padding: 8px 24px; margin: 10px 5px 0;
+                  border: none; border-radius: 4px; cursor: pointer;
+                  background: #4a90d9; color: white; }}
+    .btn:hover  {{ background: #357abd; }}
+    .btn:disabled{{ background: #aaa; cursor: default; }}
+    #play-btn   {{ background: #5cb85c; }}
+    #play-btn:hover{{ background: #449d44; }}
+    #speed-row  {{ margin-top: 10px; font-size: 0.9em; color: #555; }}
+  </style>
+</head>
+<body>
+  <h2>4D Embedding Pairwise Scatter — Slideshow</h2>
+  <p id="frame-title">Loading…</p>
+  <p id="counter"></p>
+  <img id="slide-img" src="" alt="scatter frame">
+  <br>
+  <button class="btn" id="prev-btn" onclick="step(-1)">&#9664; Prev</button>
+  <button class="btn" id="play-btn" onclick="togglePlay()">&#9654; Play</button>
+  <button class="btn" id="next-btn" onclick="step(1)">Next &#9654;</button>
+  <div id="speed-row">
+    Speed:&nbsp;
+    <input type="range" id="speed-slider"
+           min="500" max="5000" step="500" value="1500"
+           oninput="updateSpeed()">
+    &nbsp;<span id="speed-val">1.5 s / frame</span>
+  </div>
+
+  <script>
+    const frames   = {frames_js};
+    const titles   = {titles_js};
+    const N        = {n_frames};
+    let   current  = 0;
+    let   playing  = false;
+    let   timer    = null;
+    let   interval = 1500;   // milliseconds per frame in Play mode
+
+    function show(idx) {{
+      // Wrap around so Prev on frame 0 goes to the last frame
+      current = ((idx % N) + N) % N;
+      document.getElementById("slide-img").src =
+        "data:image/png;base64," + frames[current];
+      document.getElementById("frame-title").textContent = titles[current];
+      document.getElementById("counter").textContent =
+        (current + 1) + " / " + N;
+    }}
+
+    function step(delta) {{
+      if (playing) stopPlay();
+      show(current + delta);
+    }}
+
+    function togglePlay() {{
+      playing ? stopPlay() : startPlay();
+    }}
+
+    function startPlay() {{
+      playing = true;
+      document.getElementById("play-btn").textContent = "⏸ Pause";
+      // Advance immediately then keep ticking
+      show(current + 1);
+      timer = setInterval(() => show(current + 1), interval);
+    }}
+
+    function stopPlay() {{
+      playing = false;
+      document.getElementById("play-btn").textContent = "▶ Play";
+      clearInterval(timer);
+      timer = null;
+    }}
+
+    function updateSpeed() {{
+      interval = parseInt(document.getElementById("speed-slider").value);
+      document.getElementById("speed-val").textContent =
+        (interval / 1000).toFixed(1) + " s / frame";
+      if (playing) {{ stopPlay(); startPlay(); }}   // restart with new interval
+    }}
+
+    // Show first frame on load
+    show(0);
+  </script>
+</body>
+</html>"""
+
+    out_path = os.path.join(run_dir, "dim4_slideshow.html")
+    with open(out_path, "w") as fh:
+        fh.write(html)
+    print(
+        f"[exp2] Saved dim4_slideshow.html  ({n_frames} frames, dims={dims})  "
+        "— open in browser, use Prev/Next or Play"
+    )
+
+
+# ==============================================================================
 # Results table
 # ==============================================================================
 
@@ -1157,6 +1634,19 @@ def main():
 
     # Combined accuracy + silhouette vs k (geometry <-> performance link)
     plot_combined_summary(accuracy_dict, metrics, cfg.eval_prefixes, model_names, run_dir)
+
+    # 4D animated GIF: cycle through 6 pairwise 2D scatters of dims 0-3.
+    # fps=1 → 1 second/frame in Pillow metadata; some GIF viewers ignore delays
+    # and replay faster.  Use dim4_slideshow.html for reliable frame pacing.
+    dims_4 = [0, 1, 2, 3]
+    plot_4d_animation(model_embeddings, y_viz, viz_idx, run_dir, dims=dims_4, fps=1)
+
+    # 4D interactive HTML: 3D scatter with dropdown for all C(4,3)=4 views (requires plotly)
+    plot_4d_interactive(model_embeddings, y_viz, viz_idx, run_dir, dims=dims_4)
+
+    # 4D slideshow HTML: same 6 frames as the GIF, stepped manually with Prev/Next
+    # buttons or played at an adjustable speed — fixes the "GIF too fast" problem.
+    plot_4d_slideshow(model_embeddings, y_viz, viz_idx, run_dir, dims=dims_4)
 
     # ------------------------------------------------------------------
     # Step 9: Results summary table

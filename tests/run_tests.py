@@ -25,6 +25,10 @@ import time
 import os
 import argparse
 
+# Absolute path to code/ — works regardless of where this test file lives.
+# tests/ is one level below code/, so we go up one directory.
+CODE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
 # ==============================================================================
 # Test definitions — in strict dependency order
 # ==============================================================================
@@ -89,8 +93,8 @@ def main():
                         help="Run only this module by short name (e.g. 'config').")
     args = parser.parse_args()
 
-    # Directory this script lives in = code/
-    code_dir = os.path.dirname(os.path.abspath(__file__))
+    # Absolute path to code/ (defined at module level as CODE_DIR)
+    code_dir = CODE_DIR
 
     # Filter which modules to run
     to_run = MODULES

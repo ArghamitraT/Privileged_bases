@@ -29,6 +29,11 @@ Inputs:
 
 Outputs:
     Logit tensor of shape (batch_size, n_classes)
+
+Usage:
+    from models.heads import SharedClassifier, MultiHeadClassifier
+    head = SharedClassifier(embed_dim=64, n_classes=10)
+    python models/heads.py   # smoke test (random forward pass for both head modes)
 """
 
 from typing import List

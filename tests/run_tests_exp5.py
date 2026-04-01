@@ -25,6 +25,9 @@ import time
 import os
 import argparse
 import importlib
+
+# Absolute path to code/ — tests/ is one level below code/
+CODE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 import numpy as np
 
 
@@ -179,7 +182,7 @@ def main():
     )
     args = parser.parse_args()
 
-    code_dir    = os.path.dirname(os.path.abspath(__file__))
+    code_dir    = CODE_DIR
     suite_start = time.time()
     col_w       = 28
     results     = []   # list of (name, passed, elapsed)

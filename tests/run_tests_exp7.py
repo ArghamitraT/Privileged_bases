@@ -30,7 +30,9 @@ import subprocess
 import numpy as np
 import torch
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Absolute path to code/ — tests/ is one level below code/
+CODE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, CODE_DIR)
 
 from config import ExpConfig
 from data.loader import load_data
@@ -248,7 +250,7 @@ def test_e2e_fast():
     result = subprocess.run(
         [sys.executable, "experiments/exp7_mrl_vs_ff.py", "--fast"],
         capture_output=True, text=True,
-        cwd=os.path.dirname(os.path.abspath(__file__)),
+        cwd=CODE_DIR,
     )
 
     if result.returncode != 0:

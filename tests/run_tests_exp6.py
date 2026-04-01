@@ -18,13 +18,22 @@ Inputs:  None
 Outputs: Console PASS/FAIL table. Exit code 0 if all pass, 1 if any fail.
 """
 
+import os
+
+# Cap BLAS/OMP threads before numpy/torch imports — prevents macOS deadlocks.
+os.environ.setdefault("OMP_NUM_THREADS",      "1")
+os.environ.setdefault("MKL_NUM_THREADS",      "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+
 import subprocess
 import sys
 import time
-import os
 import argparse
 import importlib
 import numpy as np
+
+# Absolute path to code/ — tests/ is one level below code/
+CODE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
 # ==============================================================================
@@ -57,15 +66,28 @@ def run_subprocess(script_path: str, code_dir: str, extra_args: list = None) -> 
     abs_path = os.path.join(code_dir, script_path)
     cmd      = [sys.executable, abs_path] + (extra_args or [])
 
-    env             = os.environ.copy()
+    env               = os.environ.copy()
     env["PYTHONPATH"] = code_dir + os.pathsep + env.get("PYTHONPATH", "")
+    # Prevent macOS OMP/MKL thread-pool deadlock when torch subprocesses are
+    # spawned in rapid sequence.  Single-threaded is fine for unit tests.
+    env["OMP_NUM_THREADS"] = "1"
+    env["MKL_NUM_THREADS"] = "1"
 
-    start  = time.time()
-    result = subprocess.run(
-        cmd, capture_output=True, text=True, cwd=code_dir, env=env,
-    )
+    start = time.time()
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, cwd=code_dir, env=env,
+            timeout=120,   # never hang forever
+        )
+        passed  = (result.returncode == 0)
+        stdout  = result.stdout
+        stderr  = result.stderr
+    except subprocess.TimeoutExpired:
+        passed  = False
+        stdout  = ""
+        stderr  = "TIMEOUT: subprocess did not complete within 120 s"
     elapsed = time.time() - start
-    return (result.returncode == 0), elapsed, result.stdout, result.stderr
+    return passed, elapsed, stdout, stderr
 
 
 def print_result(name: str, passed: bool, elapsed: float,
@@ -95,88 +117,40 @@ def print_result(name: str, passed: bool, elapsed: float,
 
 def test_linear_ae(code_dir: str) -> tuple:
     """
-    Unit test for LinearAutoencoder.
+    Unit test for LinearAutoencoder — runs as a subprocess to avoid macOS
+    torch-init hangs and in-process segfaults (recurring issue on this machine).
 
-    Verifies:
-      - Forward pass produces correct shape.
-      - encode_prefix and decode_prefix produce correct shapes.
-      - orthogonalize() makes W W^T ≈ I.
-      - Gradient flows through the model.
+    Delegates to tests/helper_linear_ae.py which contains the actual assertions.
 
     Args:
-        code_dir (str): Absolute path to code/ — used for sys.path setup.
+        code_dir (str): Absolute path to code/ — passed to the helper script.
 
     Returns:
         Tuple (passed: bool, elapsed: float, stdout: str, stderr: str)
     """
-    start = time.time()
-    output_lines = []
+    helper = os.path.join(os.path.dirname(__file__), "helper_linear_ae.py")
+    return run_subprocess(helper, code_dir, extra_args=[code_dir])
 
-    try:
-        sys.path.insert(0, code_dir)
-        import torch
-        import torch.nn.functional as F
-        from models.linear_ae import LinearAutoencoder
 
-        np.random.seed(0)
-        torch.manual_seed(0)
+# ==============================================================================
+# MNIST loader unit test
+# ==============================================================================
 
-        input_dim  = 64
-        embed_dim  = 10
-        batch_size = 32
+def test_mnist_loader(code_dir: str) -> tuple:
+    """
+    Regression test for the MNIST loader segfault fix — runs as a subprocess
+    to avoid macOS torch-init hangs and in-process segfaults.
 
-        model = LinearAutoencoder(input_dim=input_dim, embed_dim=embed_dim)
-        x     = torch.randn(batch_size, input_dim)
+    Delegates to tests/helper_mnist_loader.py which contains the actual assertions.
 
-        # --- Case 1: forward pass shape ---
-        x_hat = model(x)
-        assert x_hat.shape == (batch_size, input_dim), \
-            f"Expected ({batch_size},{input_dim}), got {x_hat.shape}"
-        output_lines.append(f"  PASSED: forward pass shape {x_hat.shape}")
+    Args:
+        code_dir (str): Absolute path to code/ — passed to the helper script.
 
-        # --- Case 2: encode/decode shapes ---
-        z = model.encode(x)
-        assert z.shape == (batch_size, embed_dim)
-        x_rec = model.decode(z)
-        assert x_rec.shape == (batch_size, input_dim)
-        output_lines.append(f"  PASSED: encode {x.shape} -> {z.shape}, decode -> {x_rec.shape}")
-
-        # --- Case 3: prefix shapes ---
-        for k in [1, 5, 10]:
-            zk = model.encode_prefix(x, k)
-            assert zk.shape == (batch_size, k), f"encode_prefix k={k}: wrong shape"
-            xk = model.decode_prefix(zk, k)
-            assert xk.shape == (batch_size, input_dim), f"decode_prefix k={k}: wrong shape"
-        output_lines.append("  PASSED: encode_prefix/decode_prefix shapes for k in [1,5,10]")
-
-        # --- Case 4: orthogonalize makes W W^T ≈ I ---
-        # Corrupt weights first
-        model.encoder.weight.data = torch.randn(embed_dim, input_dim)
-        model.orthogonalize()
-        WWT = model.encoder.weight @ model.encoder.weight.T
-        residual = (WWT - torch.eye(embed_dim)).abs().mean().item()
-        assert residual < 1e-5, f"orthogonalize residual too large: {residual:.6f}"
-        output_lines.append(f"  PASSED: orthogonalize — W W^T residual = {residual:.2e}")
-
-        # --- Case 5: gradient flow ---
-        x2    = torch.randn(batch_size, input_dim)
-        x_hat2 = model(x2)
-        loss  = F.mse_loss(x_hat2, x2)
-        loss.backward()
-        assert model.encoder.weight.grad is not None, "No gradient on encoder weight"
-        output_lines.append(f"  PASSED: gradient flows (grad norm={model.encoder.weight.grad.norm().item():.4f})")
-
-        passed = True
-
-    except Exception as e:
-        output_lines.append(f"ERROR: {e}")
-        import traceback
-        output_lines.append(traceback.format_exc())
-        passed = False
-
-    elapsed = time.time() - start
-    stdout  = "\n".join(output_lines)
-    return passed, elapsed, stdout, ""
+    Returns:
+        Tuple (passed: bool, elapsed: float, stdout: str, stderr: str)
+    """
+    helper = os.path.join(os.path.dirname(__file__), "helper_mnist_loader.py")
+    return run_subprocess(helper, code_dir, extra_args=[code_dir])
 
 
 # ==============================================================================
@@ -191,7 +165,7 @@ def main():
     )
     args = parser.parse_args()
 
-    code_dir    = os.path.dirname(os.path.abspath(__file__))
+    code_dir    = CODE_DIR
     suite_start = time.time()
     col_w       = 28
     results     = []
@@ -221,7 +195,13 @@ def main():
     passed, elapsed, stdout, stderr = test_linear_ae(code_dir)
     results.append(("linear_ae_unit", passed, elapsed))
     print_result("linear_ae_unit", passed, elapsed, stdout, stderr,
-                 0, 1, suite_start, col_w)
+                 0, 2, suite_start, col_w)
+
+    # MNIST loader regression test — verifies .numpy() path doesn't segfault
+    passed, elapsed, stdout, stderr = test_mnist_loader(code_dir)
+    results.append(("mnist_loader", passed, elapsed))
+    print_result("mnist_loader", passed, elapsed, stdout, stderr,
+                 1, 2, suite_start, col_w)
 
     # ------------------------------------------------------------------
     # Part 3: End-to-end smoke test (skipped with --fast)

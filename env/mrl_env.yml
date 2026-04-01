@@ -19,3 +19,4 @@ dependencies:
     - torchvision
     - tqdm
     - scipy           # used for cdist in exp2 cluster metrics
+    - plotly          # used for exp2 interactive 4D HTML visualisation

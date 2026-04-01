@@ -35,6 +35,13 @@ Outputs (all in a new timestamped run folder):
   experiment_description.log
   runtime.txt
   code_snapshot/
+
+Usage:
+    python experiments/exp7_mrl_vs_ff.py --fast       # smoke test (digits, 5 epochs)
+    python experiments/exp7_mrl_vs_ff.py              # full run (MNIST, 20 epochs)
+    python experiments/exp7_mrl_vs_ff.py --use-exp1   # load MRL from exp1, train rest
+    python tests/run_tests_exp7.py --fast             # unit tests only
+    python tests/run_tests_exp7.py                    # unit tests + e2e smoke
 """
 
 import os

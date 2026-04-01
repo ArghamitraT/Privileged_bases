@@ -17,6 +17,11 @@ Outputs:
         X_test,  y_test   : test tensors
         input_dim         : number of input features
         n_classes         : number of target classes
+
+Usage:
+    from data.loader import load_data
+    split = load_data(cfg)
+    python data/loader.py   # quick sanity check across iris, digits, mnist
 """
 
 import numpy as np
@@ -67,45 +72,31 @@ def _load_sklearn_dataset(name: str):
 
 def _load_mnist():
     """
-    Load MNIST via torchvision, flatten images to 784-dim vectors.
+    Load MNIST via sklearn fetch_openml, flatten images to 784-dim vectors.
+
+    Uses sklearn instead of torchvision to avoid a macOS segfault in
+    torchvision's SSL/urllib download mechanism (Issue 6 in CLAUDE.md).
+    sklearn is already a project dependency and caches the dataset in
+    ~/scikit_learn_data/ after the first download (~11 MB).
 
     Returns:
         Tuple (X, y) as numpy arrays of shape (70000, 784) and (70000,).
     """
-    # torchvision is only imported here so sklearn-only users are not forced
-    # to install it
-    try:
-        from torchvision import datasets as tv_datasets, transforms
-    except ImportError:
-        raise ImportError(
-            "torchvision is required for MNIST. "
-            "Install it with: pip install torchvision"
-        )
+    from sklearn.datasets import fetch_openml
 
-    transform = transforms.ToTensor()
+    print("[loader] Fetching MNIST via sklearn fetch_openml ...")
+    print("[loader] First run downloads ~11 MB to ~/scikit_learn_data/ — subsequent runs are instant.")
 
-    # Download to a local cache inside the project's files/ folder
-    # (will be skipped if already downloaded)
-    import os, sys
-    # Find cache dir relative to this file
-    here = os.path.dirname(os.path.abspath(__file__))
-    cache_dir = os.path.join(here, "..", "..", "files", "mnist_cache")
-    os.makedirs(cache_dir, exist_ok=True)
+    # as_frame=False  → plain numpy arrays (not pandas DataFrame)
+    # parser='auto'   → suppress FutureWarning about default parser change
+    mnist = fetch_openml("mnist_784", version=1, as_frame=False, parser="auto")
 
-    train_ds = tv_datasets.MNIST(cache_dir, train=True,  download=True, transform=transform)
-    test_ds  = tv_datasets.MNIST(cache_dir, train=False, download=True, transform=transform)
+    # data:   (70000, 784) float64, pixel values 0–255 → normalise to [0, 1]
+    # target: (70000,) strings '0'–'9'                 → cast to int64
+    X = mnist.data.astype(np.float32) / 255.0
+    y = mnist.target.astype(np.int64)
 
-    # Stack into numpy arrays.
-    # Convert via .tolist() first to avoid the PyTorch-NumPy bridge entirely
-    # (np.array(tensor) calls tensor.__array__() -> .numpy(), which fails when
-    # PyTorch was built without NumPy support; .tolist() is always available).
-    X_train = np.array(train_ds.data.tolist(), dtype=np.float32).reshape(-1, 784) / 255.0
-    y_train = np.array(train_ds.targets.tolist(), dtype=np.int64)
-    X_test  = np.array(test_ds.data.tolist(),  dtype=np.float32).reshape(-1, 784) / 255.0
-    y_test  = np.array(test_ds.targets.tolist(), dtype=np.int64)
-
-    X = np.concatenate([X_train, X_test], axis=0)
-    y = np.concatenate([y_train, y_test], axis=0)
+    print(f"[loader] MNIST loaded: X={X.shape}, y={y.shape}")
     return X, y
 
 

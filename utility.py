@@ -12,6 +12,10 @@ Provides:
 - save_code_snapshot          : copy the entire code/ folder into run_dir/code_snapshot/
                                 so any result folder is fully self-contained and
                                 exactly reproducible from its own snapshot
+
+Usage:
+    from utility import create_run_dir, save_runtime, save_code_snapshot, get_path
+    python utility.py   # quick sanity check (prints resolved project root + test path)
 """
 
 import os

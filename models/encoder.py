@@ -25,6 +25,11 @@ Inputs:
 
 Outputs:
     torch.Tensor of shape (batch_size, embed_dim), L2-normalised
+
+Usage:
+    from models.encoder import MLPEncoder
+    encoder = MLPEncoder(input_dim=784, hidden_dim=256, embed_dim=64)
+    python models/encoder.py   # smoke test (random forward pass, checks output shape)
 """
 
 import torch

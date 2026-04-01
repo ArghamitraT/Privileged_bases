@@ -10,6 +10,11 @@ multiple files.
 
 Inputs:  None (this is a pure configuration module)
 Outputs: ExpConfig dataclass instance
+
+Usage:
+    from config import ExpConfig
+    cfg = ExpConfig(dataset='digits', embed_dim=16)
+    python config.py   # prints the default configuration
 """
 
 from dataclasses import dataclass, field

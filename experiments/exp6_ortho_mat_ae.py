@@ -25,8 +25,10 @@ Key prediction: Only Ortho + Mat recovers both eigenvectors AND ordering.
 The others recover the subspace but not the individual basis directions.
 
 Usage:
-    python experiments/exp6_ortho_mat_ae.py           # full run (digits, embed_dim=10)
-    python experiments/exp6_ortho_mat_ae.py --fast    # smoke test (fewer epochs)
+    python experiments/exp6_ortho_mat_ae.py                                         # full run (digits, embed_dim=10)
+    python experiments/exp6_ortho_mat_ae.py --fast                                  # smoke test (fewer epochs)
+    python experiments/exp6_ortho_mat_ae.py --use-existing PATH                     # load saved .pt weights, skip training
+    python experiments/exp6_ortho_mat_ae.py --use-existing files/results/exprmnt_2026_03_21__21_58_12  # use last saved run
 
 Inputs:  ExpConfig (defaults overridden locally for this experiment)
 Outputs: Per-run folder containing —
@@ -46,6 +48,13 @@ Outputs: Per-run folder containing —
 """
 
 import os
+
+# Must be set before numpy/torch are imported to prevent macOS OMP deadlocks
+# that cause DataLoader and subprocess torch inits to hang indefinitely.
+os.environ.setdefault("OMP_NUM_THREADS",      "1")
+os.environ.setdefault("MKL_NUM_THREADS",      "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+
 import sys
 import time
 import dataclasses
@@ -240,6 +249,8 @@ def train_autoencoder(
 
     log_path = os.path.join(run_dir, f"{model_tag}_train.log")
 
+    print(f"[train] {len(train_loader)} batches/epoch  |  {cfg.epochs} epochs  |  starting ...")
+
     with open(log_path, "w") as log_f:
         log_f.write(f"=== {model_tag} training log ===\n\n")
 
@@ -330,8 +341,14 @@ def compute_column_alignment(model: LinearAutoencoder, pca: PCA) -> np.ndarray:
     Returns:
         np.ndarray: Shape (embed_dim,) — per-dimension absolute cosine similarity.
     """
-    W  = model.encoder.weight.detach().numpy()          # (embed_dim, input_dim)
-    PC = pca.components_[:model.embed_dim]              # (embed_dim, input_dim)
+    # Use .tolist() to escape the torch-numpy bridge entirely.
+    # In this environment (numpy 2.x + torch 2.x), both .numpy() and
+    # np.array(tensor, dtype=...) fail due to broken __array__ / ufunc internals
+    # when the tensor was loaded from disk via torch.load() + .data= assignment.
+    # .tolist() converts to plain Python floats — no bridge involved — and
+    # np.array(python_list) then creates a fully clean numpy array.
+    W  = np.array(model.encoder.weight.detach().cpu().tolist(), dtype=np.float64)  # (embed_dim, input_dim)
+    PC = np.array(pca.components_[:model.embed_dim],            dtype=np.float64)  # (embed_dim, input_dim)
 
     # Normalise rows to unit length for cosine similarity
     W_norm  = W  / (np.linalg.norm(W,  axis=1, keepdims=True) + 1e-12)
@@ -440,8 +457,8 @@ def compute_subspace_angle(
     Returns:
         dict: {k: angle_in_degrees} for each k in prefixes.
     """
-    W  = model.encoder.weight.detach().numpy()   # (embed_dim, input_dim)
-    PC = pca.components_                          # (n_components, input_dim)
+    W  = np.array(model.encoder.weight.detach().cpu().tolist(), dtype=np.float64)  # (embed_dim, input_dim)
+    PC = np.array(pca.components_,                              dtype=np.float64)  # (n_components, input_dim)
 
     results = {}
     for k in prefixes:
@@ -689,6 +706,10 @@ def main():
         "--fast", action="store_true",
         help="Smoke-test mode: fewer epochs, digits dataset, embed_dim=10.",
     )
+    parser.add_argument(
+        "--use-existing", metavar="RUN_DIR",
+        help="Load saved weights from a previous run directory and skip training.",
+    )
     args = parser.parse_args()
     run_start = time.time()
 
@@ -707,15 +728,25 @@ def main():
         )
         print("[main] --fast mode: digits, embed_dim=10, 5 epochs")
     else:
+        # cfg = ExpConfig(
+        #     dataset="digits",
+        #     embed_dim=10,
+        #     eval_prefixes=list(range(1, 11)),
+        #     epochs=50,
+        #     patience=10,
+        #     data_seed=42,
+        #     experiment_name="exp6_ortho_mat_ae",
+        # )
+        # Change to MNIST                                                                                                                                                                     
         cfg = ExpConfig(
-            dataset="digits",
-            embed_dim=10,
-            eval_prefixes=list(range(1, 11)),
-            epochs=50,
-            patience=10,
-            data_seed=42,
-            experiment_name="exp6_ortho_mat_ae",
-        )
+            dataset="mnist",
+            embed_dim=64,
+            eval_prefixes=list(range(1, 65)),   # or [1,2,4,8,16,32,64] for a coarser sweep
+            epochs=20,                                                                                                                                                                        
+            patience=10,                                                                                                                                                                      
+            data_seed=42,                                                                                                                                                                     
+            experiment_name="exp6_ortho_mat_ae",                                                                                                                                              
+        )       
 
     set_seeds(cfg.seed)
 
@@ -734,7 +765,11 @@ def main():
     print("=" * 60)
     data = load_data(cfg)
 
-    # Convert test data to numpy for sklearn metrics
+    # Convert test/train data to numpy for sklearn metrics.
+    # Use .tolist() → np.array() to fully escape the torch-numpy bridge.
+    # .numpy().copy() is not sufficient in this environment (numpy 2.x +
+    # torch 2.x): the bridge corrupts internal numpy metadata so ufuncs
+    # (subtraction, mean, linalg, etc.) crash with TypeError.
     X_test_np  = np.array(data.X_test.tolist(),  dtype=np.float32)
     X_train_np = np.array(data.X_train.tolist(), dtype=np.float32)
 
@@ -772,19 +807,35 @@ def main():
     models    = {}
     histories = {}
 
-    for tag, use_ortho, use_mat in model_configs:
-        set_seeds(cfg.seed)   # same init for all models — fair comparison
-        model = LinearAutoencoder(input_dim=data.input_dim, embed_dim=cfg.embed_dim)
-        history = train_autoencoder(
-            model, data, cfg, use_ortho, use_mat, tag, run_dir
-        )
-        models[tag]    = model
-        histories[tag] = history
+    if args.use_existing:
+        # ------------------------------------------------------------------
+        # Load weights from a previous run — skip training entirely
+        # ------------------------------------------------------------------
+        src = args.use_existing
+        print(f"[main] Loading saved weights from: {src}")
+        for tag, _, _ in model_configs:
+            pt_path = os.path.join(src, f"{tag}.pt")
+            assert os.path.isfile(pt_path), f"Missing weight file: {pt_path}"
+            model = LinearAutoencoder(input_dim=data.input_dim, embed_dim=cfg.embed_dim)
+            model.encoder.weight.data = torch.load(pt_path, map_location="cpu")
+            models[tag]    = model
+            histories[tag] = None   # no training history when loading
+            print(f"[main]   Loaded {tag} from {pt_path}")
+        print("[main] All weights loaded — skipping training.\n")
+    else:
+        for tag, use_ortho, use_mat in model_configs:
+            set_seeds(cfg.seed)   # same init for all models — fair comparison
+            model = LinearAutoencoder(input_dim=data.input_dim, embed_dim=cfg.embed_dim)
+            history = train_autoencoder(
+                model, data, cfg, use_ortho, use_mat, tag, run_dir
+            )
+            models[tag]    = model
+            histories[tag] = history
 
-        # Save model weights
-        pt_path = os.path.join(run_dir, f"{tag}.pt")
-        torch.save(model.encoder.weight.data, pt_path)
-        print(f"[main] {tag} weights saved to {pt_path}")
+            # Save model weights
+            pt_path = os.path.join(run_dir, f"{tag}.pt")
+            torch.save(model.encoder.weight.data, pt_path)
+            print(f"[main] {tag} weights saved to {pt_path}")
 
     # ------------------------------------------------------------------
     # Step 6: Compute metrics
@@ -812,9 +863,13 @@ def main():
     exp_var_curves = {}
     for tag in recon_curves:
         if tag == "pca":
+            # Use the original tensor directly — torch.tensor(numpy_array) fails
+            # in this environment when the array was created via .tolist() conversion
+            # (numpy 2.x dtype inference breaks). compute_explained_variance only
+            # needs .var().item() so the original data.X_test tensor is fine.
             exp_var_curves["pca"] = compute_explained_variance(
                 recon_curves["pca"],
-                torch.tensor(X_test_np))
+                data.X_test)
         else:
             exp_var_curves[tag] = compute_explained_variance(
                 recon_curves[tag], data.X_test)
@@ -887,7 +942,10 @@ def main():
     plot_reconstruction_curve(recon_curves, cfg, run_dir)
     plot_explained_variance(exp_var_curves, cfg, run_dir)
     plot_subspace_angle(subspace_angles, cfg, run_dir)
-    plot_training_curves(histories, run_dir)
+    if any(v is not None for v in histories.values()):
+        plot_training_curves(histories, run_dir)
+    else:
+        print("[main] Skipping training_curves.png — weights loaded from existing run.")
 
     # ------------------------------------------------------------------
     # Step 9: Save runtime and code snapshot (MANDATORY)

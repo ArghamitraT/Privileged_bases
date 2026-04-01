@@ -28,6 +28,11 @@ Inputs:
 
 Outputs:
     torch.Tensor: scalar loss value
+
+Usage:
+    from losses.mat_loss import StandardLoss, MatryoshkaLoss, build_loss
+    criterion = build_loss('mat', prefixes=[1, 2, 4, 8], head_mode='shared_head')
+    python losses/mat_loss.py   # smoke test (forward pass for all loss types)
 """
 
 from typing import List, Optional
