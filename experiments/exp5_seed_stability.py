@@ -78,6 +78,25 @@ from evaluation.prefix_eval import evaluate_prefix_sweep, evaluate_pca_baseline
 
 
 # ==============================================================================
+# CONFIG — edit here to change the full run; use --fast for a quick smoke test
+# ==============================================================================
+DATASET       = "mnist"
+EMBED_DIM     = 64
+HIDDEN_DIM    = 256
+HEAD_MODE     = "shared_head"
+EVAL_PREFIXES = [1, 2, 4, 8, 16, 32, 64]
+EPOCHS        = 20
+PATIENCE      = 5
+LR            = 1e-3
+BATCH_SIZE    = 128
+WEIGHT_DECAY  = 1e-4
+SEED          = 42
+DATA_SEED     = 42              # fixed seed for the data split (separate from model seed)
+MODEL_SEEDS   = [100, 200, 300] # one independent training run per seed
+# ==============================================================================
+
+
+# ==============================================================================
 # Helpers (reused from exp1 where possible)
 # ==============================================================================
 
@@ -878,19 +897,33 @@ def main():
     # Step 1: Configure
     # ------------------------------------------------------------------
     if args.fast:
+        # Smoke-test overrides
         cfg = ExpConfig(
-            dataset="digits",
-            embed_dim=16,
-            eval_prefixes=[1, 2, 4, 8, 16],
-            epochs=3,
-            patience=2,
-            data_seed=42,
-            model_seeds=[100, 200],
+            dataset="digits", embed_dim=16, hidden_dim=128,
+            head_mode="shared_head", eval_prefixes=[1, 2, 4, 8, 16],
+            lr=LR, epochs=3, batch_size=BATCH_SIZE, patience=2,
+            weight_decay=WEIGHT_DECAY, seed=SEED,
+            data_seed=42, model_seeds=[100, 200],
             experiment_name="exp5_seed_stability",
         )
         print("[main] --fast mode: digits dataset, 2 seeds, 3 epochs")
     else:
-        cfg = ExpConfig(experiment_name="exp5_seed_stability")
+        cfg = ExpConfig(
+            dataset       = DATASET,
+            embed_dim     = EMBED_DIM,
+            hidden_dim    = HIDDEN_DIM,
+            head_mode     = HEAD_MODE,
+            eval_prefixes = EVAL_PREFIXES,
+            lr            = LR,
+            epochs        = EPOCHS,
+            batch_size    = BATCH_SIZE,
+            patience      = PATIENCE,
+            weight_decay  = WEIGHT_DECAY,
+            seed          = SEED,
+            data_seed     = DATA_SEED,
+            model_seeds   = MODEL_SEEDS,
+            experiment_name = "exp5_seed_stability",
+        )
 
     # Apply --low-dim overrides (compatible with both --fast and default)
     if args.low_dim:

@@ -21,6 +21,8 @@ Usage:
 import os
 import time
 import shutil
+import json
+import dataclasses
 
 
 # ==============================================================================
@@ -186,6 +188,51 @@ def save_code_snapshot(run_dir: str) -> str:
     shutil.copytree(code_dir, snapshot_dest, ignore=ignore)
     print(f"[utility] Code snapshot saved to {snapshot_dest}")
     return snapshot_dest
+
+
+# ==============================================================================
+# Config serialisation — save / load ExpConfig as JSON
+# ==============================================================================
+
+def save_config_json(cfg, run_dir: str) -> str:
+    """
+    Serialise an ExpConfig dataclass to config.json in the run directory.
+
+    This makes every run folder self-describing: any later experiment
+    (e.g. exp8 loading exp10 weights) can reconstruct the exact config
+    without parsing log files or guessing parameters.
+
+    Args:
+        cfg     : ExpConfig dataclass instance.
+        run_dir (str): Path to the run output directory.
+
+    Returns:
+        str: Path to the written config.json.
+    """
+    path = os.path.join(run_dir, "config.json")
+    with open(path, "w") as f:
+        json.dump(dataclasses.asdict(cfg), f, indent=2)
+    print(f"[utility] Config saved to {path}")
+    return path
+
+
+def load_config_json(run_dir: str) -> dict:
+    """
+    Load the config.json saved by save_config_json from a run directory.
+
+    Args:
+        run_dir (str): Path to the run output directory (or weights folder).
+
+    Returns:
+        dict: The saved config fields, or {} if config.json does not exist.
+    """
+    path = os.path.join(run_dir, "config.json")
+    if not os.path.isfile(path):
+        return {}
+    with open(path) as f:
+        cfg_dict = json.load(f)
+    print(f"[utility] Config loaded from {path}")
+    return cfg_dict
 
 
 # ==============================================================================

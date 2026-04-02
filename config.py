@@ -1,109 +1,119 @@
 """
 Script: config.py
 -----------------
-Central configuration for all experiments.
+Schema and validation container for experiment configuration.
 
-All hyperparameters, dataset choices, and structural decisions live here.
-Import ExpConfig and instantiate it at the top of any experiment script.
-Changing one value here propagates everywhere — no need to hunt through
-multiple files.
+ExpConfig is a typed dataclass that shared modules (trainer.py, prefix_eval.py,
+etc.) accept instead of long argument lists. It is NOT a source of defaults —
+every experiment script defines its own CONFIG block at the top with all
+parameters made explicit. ExpConfig is only instantiated inside each experiment's
+main(), passing values from that script's CONFIG block.
 
-Inputs:  None (this is a pure configuration module)
-Outputs: ExpConfig dataclass instance
+Inputs:  All fields must be provided explicitly by the calling experiment.
+         Only test_size and val_size carry stable defaults (never vary across runs).
+Outputs: Validated ExpConfig instance
 
 Usage:
     from config import ExpConfig
-    cfg = ExpConfig(dataset='digits', embed_dim=16)
-    python config.py   # prints the default configuration
+    cfg = ExpConfig(
+        dataset="mnist", embed_dim=64, hidden_dim=256,
+        head_mode="shared_head", eval_prefixes=[1,2,4,8,16,32,64],
+        lr=1e-3, epochs=20, batch_size=128, patience=5,
+        weight_decay=1e-4, l1_lambda=0.05, seed=42,
+        data_seed=42, model_seeds=[100,200],
+        experiment_name="exp1_prefix_curve",
+    )
+    python config.py   # prints a sample validated configuration
 """
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 
 
 @dataclass
 class ExpConfig:
     """
-    Master configuration for Experiment 1: Prefix Performance Curve.
+    Validated configuration container shared across all experiments.
+
+    All fields must be set explicitly by the calling experiment script —
+    there are no experiment-level defaults here (only test_size and val_size,
+    which never vary). This ensures that reading a single experiment file
+    gives a complete picture of what that run does.
+
+    Required fields (no defaults — experiment must supply them):
+        dataset, embed_dim, hidden_dim, head_mode, eval_prefixes,
+        lr, epochs, batch_size, patience, weight_decay, seed,
+        experiment_name
+
+    Optional fields (None if not used by the experiment):
+        l1_lambda   — L1 regularisation weight (exp7+)
+        data_seed   — fixed data-split seed (exp5+)
+        model_seeds — list of model-init seeds (exp5+)
+
+    Stable infrastructure defaults (never touch these):
+        test_size = 0.2
+        val_size  = 0.1
 
     --- Data ---
-    dataset     : which dataset to load. Options:
-                    'mnist'          (torchvision, 784 input dims, 10 classes)
-                    'iris'           (sklearn,      4 input dims,   3 classes)
-                    'wine'           (sklearn,      13 input dims,  3 classes)
-                    'breast_cancer'  (sklearn,      30 input dims,  2 classes)
-                    'digits'         (sklearn,      64 input dims, 10 classes)
+    dataset     : 'mnist' | 'digits' | 'iris' | 'wine' | 'breast_cancer'
     test_size   : fraction of data held out for testing
-    val_size    : fraction of TRAINING data used for validation / early stopping
+    val_size    : fraction of TRAINING data used for validation
 
     --- Model ---
     embed_dim   : size of the learned embedding (output of encoder)
     hidden_dim  : size of the hidden layer inside the MLP encoder
-    head_mode   : classifier head design
-                    'shared_head' (Mode A) — one Linear(embed_dim, n_classes) head,
-                                            prefix is zero-padded back to embed_dim
-                    'multi_head'  (Mode B) — one Linear(k, n_classes) head per scale,
-                                            prefix is sliced to exactly k dims
+    head_mode   : 'shared_head' (Mode A) or 'multi_head' (Mode B)
 
     --- MRL ---
-    eval_prefixes : list of prefix sizes k to evaluate at test time.
-                    Must all be <= embed_dim.
-                    Example: [1, 2, 4, 8, 16, 32, 64]
+    eval_prefixes : list of prefix sizes k; all must be <= embed_dim
 
     --- Training ---
-    lr              : learning rate for Adam optimizer
-    epochs          : maximum number of training epochs
-    batch_size      : mini-batch size
-    patience        : early stopping — stop if val loss does not improve for
-                      this many epochs. Set to None to disable early stopping.
-    weight_decay    : L2 regularisation on model weights
+    lr           : Adam learning rate
+    epochs       : max training epochs
+    batch_size   : mini-batch size
+    patience     : early-stopping patience (epochs without val improvement)
+    weight_decay : L2 regularisation on weights
+
+    --- Regularisation ---
+    l1_lambda : weight of L1 penalty on embedding activations (exp7+)
 
     --- Reproducibility ---
-    seed        : master random seed for model init + training (numpy, torch, sklearn)
-
-    --- Experiment 5: Seed Stability ---
-    data_seed   : seed used for the fixed data split in exp5 (kept separate from
-                  model_seeds so only training randomness varies across runs)
-    model_seeds : list of seeds used for model initialisation in exp5.
-                  Each entry produces one independent Standard + Mat training run.
+    seed        : master random seed for model init + training
+    data_seed   : seed for the fixed data split (exp5+)
+    model_seeds : seeds for independent training runs (exp5+)
 
     --- Output ---
     experiment_name : used to name the timestamped run output folder
     """
 
-    # --- Data ---
-    dataset:    str   = "mnist" # "mnist" digits
-    test_size:  float = 0.2
-    val_size:   float = 0.1      # fraction of training set used for validation
+    # ------------------------------------------------------------------ #
+    # Required — no defaults; every experiment must supply these          #
+    # ------------------------------------------------------------------ #
+    dataset:         str
+    embed_dim:       int
+    hidden_dim:      int
+    head_mode:       str        # 'shared_head' or 'multi_head'
+    eval_prefixes:   List[int]
+    lr:              float
+    epochs:          int
+    batch_size:      int
+    patience:        int
+    weight_decay:    float
+    seed:            int
+    experiment_name: str
 
-    # --- Model ---
-    embed_dim:  int   = 64
-    hidden_dim: int   = 256
-    head_mode:  str   = "shared_head"   # 'shared_head' or 'multi_head'
+    # ------------------------------------------------------------------ #
+    # Stable infrastructure — same in every experiment, safe to default   #
+    # ------------------------------------------------------------------ #
+    test_size: float = 0.2
+    val_size:  float = 0.1
 
-    # --- MRL: prefix sizes to evaluate ---
-    eval_prefixes: List[int] = field(default_factory=lambda: [1, 2, 4, 8, 16, 32, 64])
-
-    # --- Training ---
-    lr:           float = 1e-3
-    epochs:       int   = 2
-    batch_size:   int   = 128
-    patience:     int   = 5     # set to None to disable early stopping
-    weight_decay: float = 1e-4
-
-    # --- Experiment 7: L1 regularization strength ---
-    l1_lambda: float = 0.05   # weight of L1 penalty on embedding activations
-
-    # --- Reproducibility ---
-    seed: int = 42
-
-    # --- Experiment 5: Seed Stability ---
-    data_seed:   int       = 42
-    # model_seeds: List[int] = field(default_factory=lambda: [100, 200, 300])
-    model_seeds: List[int] = field(default_factory=lambda: [100, 200])
-
-    # --- Output ---
-    experiment_name: str = "exp1_prefix_curve"
+    # ------------------------------------------------------------------ #
+    # Optional — only some experiments use these; default None / []       #
+    # ------------------------------------------------------------------ #
+    l1_lambda:   Optional[float]  = None   # L1 regularisation weight (exp7+)
+    data_seed:   Optional[int]    = None   # fixed data-split seed (exp5+)
+    model_seeds: List[int]        = field(default_factory=list)  # per-run seeds (exp5+)
 
     def __post_init__(self):
         """Validate config values immediately after construction."""
@@ -123,14 +133,17 @@ class ExpConfig:
         assert 0 < self.test_size < 1, "test_size must be between 0 and 1"
         assert 0 < self.val_size  < 1, "val_size must be between 0 and 1"
 
-        print("[config] ExpConfig validated successfully.")
+        print("[config] ExpConfig validated.")
         print(f"  dataset       : {self.dataset}")
-        print(f"  embed_dim     : {self.embed_dim}")
+        print(f"  embed_dim     : {self.embed_dim}  |  hidden_dim : {self.hidden_dim}")
         print(f"  head_mode     : {self.head_mode}")
         print(f"  eval_prefixes : {self.eval_prefixes}")
         print(f"  epochs        : {self.epochs}  |  lr: {self.lr}  |  batch: {self.batch_size}")
+        print(f"  patience      : {self.patience}  |  weight_decay: {self.weight_decay}")
         print(f"  seed          : {self.seed}")
-        print(f"  data_seed     : {self.data_seed}  |  model_seeds: {self.model_seeds}")
+        if self.l1_lambda   is not None: print(f"  l1_lambda     : {self.l1_lambda}")
+        if self.data_seed   is not None: print(f"  data_seed     : {self.data_seed}")
+        if self.model_seeds:             print(f"  model_seeds   : {self.model_seeds}")
 
 
 # ==============================================================================
@@ -138,23 +151,51 @@ class ExpConfig:
 # ==============================================================================
 
 if __name__ == "__main__":
-    print("--- Testing default ExpConfig ---")
-    cfg = ExpConfig()
+    print("--- Testing full ExpConfig ---")
+    cfg = ExpConfig(
+        dataset="mnist",
+        embed_dim=64,
+        hidden_dim=256,
+        head_mode="shared_head",
+        eval_prefixes=[1, 2, 4, 8, 16, 32, 64],
+        lr=1e-3,
+        epochs=20,
+        batch_size=128,
+        patience=5,
+        weight_decay=1e-4,
+        seed=42,
+        experiment_name="exp1_prefix_curve",
+    )
     print()
 
-    print("--- Testing custom ExpConfig ---")
+    print("--- Testing with optional fields ---")
     cfg2 = ExpConfig(
         dataset="digits",
-        embed_dim=32,
-        eval_prefixes=[1, 2, 4, 8, 16, 32],
-        head_mode="multi_head",
-        epochs=20,
+        embed_dim=16,
+        hidden_dim=128,
+        head_mode="shared_head",
+        eval_prefixes=[1, 2, 4, 8, 16],
+        lr=1e-3,
+        epochs=5,
+        batch_size=128,
+        patience=3,
+        weight_decay=1e-4,
+        seed=42,
+        experiment_name="exp5_seed_stability",
+        l1_lambda=0.05,
+        data_seed=42,
+        model_seeds=[100, 200],
     )
     print()
 
     print("--- Testing invalid config (should raise AssertionError) ---")
     try:
-        bad = ExpConfig(embed_dim=8, eval_prefixes=[1, 2, 4, 16])  # 16 > 8
+        bad = ExpConfig(
+            dataset="digits", embed_dim=8, hidden_dim=128,
+            head_mode="shared_head", eval_prefixes=[1, 2, 4, 16],
+            lr=1e-3, epochs=5, batch_size=128, patience=3,
+            weight_decay=1e-4, seed=42, experiment_name="bad",
+        )
         print("  ERROR: should have raised AssertionError")
     except AssertionError as e:
         print(f"  Correctly caught: {e}")

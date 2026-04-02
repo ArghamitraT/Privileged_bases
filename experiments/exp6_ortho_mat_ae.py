@@ -77,6 +77,24 @@ from models.linear_ae import LinearAutoencoder
 
 
 # ==============================================================================
+# CONFIG — edit here to change the full run; use --fast for a quick smoke test
+# ==============================================================================
+DATASET       = "mnist"
+EMBED_DIM     = 64
+HIDDEN_DIM    = 256
+HEAD_MODE     = "shared_head"
+EVAL_PREFIXES = list(range(1, 65))   # dense: 1..64
+EPOCHS        = 20
+PATIENCE      = 10
+LR            = 1e-3
+BATCH_SIZE    = 128
+WEIGHT_DECAY  = 1e-4
+SEED          = 42
+DATA_SEED     = 42
+# ==============================================================================
+
+
+# ==============================================================================
 # Helpers
 # ==============================================================================
 
@@ -718,35 +736,29 @@ def main():
     # ------------------------------------------------------------------
     if args.fast:
         cfg = ExpConfig(
-            dataset="digits",
-            embed_dim=10,
-            eval_prefixes=list(range(1, 11)),   # [1,2,...,10]
-            epochs=5,
-            patience=3,
-            data_seed=42,
+            dataset="digits", embed_dim=10, hidden_dim=128,
+            head_mode="shared_head", eval_prefixes=list(range(1, 11)),
+            lr=LR, epochs=5, batch_size=BATCH_SIZE, patience=3,
+            weight_decay=WEIGHT_DECAY, seed=SEED, data_seed=42,
             experiment_name="exp6_ortho_mat_ae",
         )
         print("[main] --fast mode: digits, embed_dim=10, 5 epochs")
     else:
-        # cfg = ExpConfig(
-        #     dataset="digits",
-        #     embed_dim=10,
-        #     eval_prefixes=list(range(1, 11)),
-        #     epochs=50,
-        #     patience=10,
-        #     data_seed=42,
-        #     experiment_name="exp6_ortho_mat_ae",
-        # )
-        # Change to MNIST                                                                                                                                                                     
         cfg = ExpConfig(
-            dataset="mnist",
-            embed_dim=64,
-            eval_prefixes=list(range(1, 65)),   # or [1,2,4,8,16,32,64] for a coarser sweep
-            epochs=20,                                                                                                                                                                        
-            patience=10,                                                                                                                                                                      
-            data_seed=42,                                                                                                                                                                     
-            experiment_name="exp6_ortho_mat_ae",                                                                                                                                              
-        )       
+            dataset       = DATASET,
+            embed_dim     = EMBED_DIM,
+            hidden_dim    = HIDDEN_DIM,
+            head_mode     = HEAD_MODE,
+            eval_prefixes = EVAL_PREFIXES,
+            lr            = LR,
+            epochs        = EPOCHS,
+            batch_size    = BATCH_SIZE,
+            patience      = PATIENCE,
+            weight_decay  = WEIGHT_DECAY,
+            seed          = SEED,
+            data_seed     = DATA_SEED,
+            experiment_name = "exp6_ortho_mat_ae",
+        )
 
     set_seeds(cfg.seed)
 

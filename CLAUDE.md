@@ -51,13 +51,13 @@ python scripts/run_exp10_8_multidim.py --fast --dims 8
 ---
 
 ## Project File Structure
-- `config.py` — `ExpConfig` dataclass (all training/eval settings)
+- `config.py` — `ExpConfig` dataclass (schema + validation only; no experiment defaults — see Per-Experiment CONFIG Pattern below)
 - `utility.py` — `get_path()`, `create_run_dir()`, `save_runtime()`, `save_code_snapshot()`
 - `data/loader.py` — dataset loading (sklearn + fetch_openml for MNIST)
 - `models/encoder.py` — MLP encoder: input_dim → hidden → embed_dim
 - `models/heads.py` — SharedClassifier (mode A) and MultiHeadClassifier (mode B)
 - `models/linear_ae.py` — LinearAutoencoder with QR orthogonalization (exp6)
-- `losses/mat_loss.py` — MatryoshkaLoss, L1RegLoss, `build_loss()`
+- `losses/mat_loss.py` — MatryoshkaLoss, L1RegLoss, PrefixL1Loss, `build_loss()`
 - `training/trainer.py` — generic training loop
 - `evaluation/prefix_eval.py` — prefix sweep evaluation
 - `experiments/` — one script per experiment (exp1–exp9)
@@ -80,11 +80,27 @@ python scripts/run_exp10_8_multidim.py --fast --dims 8
 3. **Test file validation** — create/update test file; **read it** to verify coverage; do NOT run it (user runs tests).
 
 ### Mandatory outputs per run
-- `training_curves.png` — loss-vs-epoch for all trained models. Never omit.
+- `training_curves_{stamp}.png` — loss-vs-epoch for all trained models. Never omit.
 - `experiment_description.log` — what/why/expected outcome + full config dump.
 - `results_summary.txt` — accuracy tables, per-seed raw values, key metrics.
 - `runtime.txt` — total elapsed time (seconds).
 - `code_snapshot/` — exact copy of code/ at run time.
+
+### Figure filename timestamping convention
+**All figure filenames must include a `_{YYYY_MM_DD__{HH_MM_SS}` suffix** so that
+re-running an experiment (e.g. with `--use-weights`) into a fresh run folder never
+overwrites previously saved images.
+
+Implementation pattern (set once at the top of `main()`, pass to every plot call):
+```python
+fig_stamp = time.strftime("_%Y_%m_%d__%H_%M_%S")
+# then e.g.:
+plot_all_curves(..., fig_stamp=fig_stamp)
+plot_training_curves(run_dir, model_tags=[...], fig_stamp=fig_stamp)
+```
+
+Applies to: `training_curves`, `linear_accuracy_curve`, `1nn_accuracy_curve`,
+`combined_comparison`, and any other per-run figure. The stamp goes **before** `.png`.
 
 ---
 
@@ -97,6 +113,58 @@ Usage:
     python experiments/exp7_mrl_vs_ff.py               # full run (MNIST, 20 epochs)
 ```
 Update whenever a new CLI flag is added.
+
+---
+
+## Per-Experiment CONFIG Pattern
+
+Every experiment script owns its complete configuration. **Do not put experiment defaults in `config.py`.**
+
+### Rule
+> "What does this experiment run with?" → look at the experiment file's CONFIG block.
+> "What fields exist?" → look at `config.py` (schema + validation only).
+
+### `config.py` role
+- Typed dataclass container (`ExpConfig`) that shared modules accept instead of long argument lists.
+- Validation in `__post_init__` (prefix sizes, head_mode, fractions).
+- **No experiment-level defaults** — only `test_size=0.2` and `val_size=0.1` are stable enough to live here.
+
+### Experiment file structure
+Each experiment script must have a CONFIG block immediately after the imports:
+
+```python
+# ==============================================================================
+# CONFIG — edit here to change the full run; use --fast for a quick smoke test
+# ==============================================================================
+DATASET       = "mnist"
+EMBED_DIM     = 64
+HIDDEN_DIM    = 256
+HEAD_MODE     = "shared_head"
+EVAL_PREFIXES = [1, 2, 4, 8, 16, 32, 64]
+EPOCHS        = 20
+PATIENCE      = 5
+LR            = 1e-3
+BATCH_SIZE    = 128
+WEIGHT_DECAY  = 1e-4
+SEED          = 42
+L1_LAMBDA     = 0.05          # include only if the experiment uses L1
+# any experiment-specific non-ExpConfig params go here too (e.g. MAX_1NN_DB)
+# ==============================================================================
+```
+
+`main()` builds `ExpConfig` from these constants:
+```python
+cfg = ExpConfig(
+    dataset=DATASET, embed_dim=EMBED_DIM, hidden_dim=HIDDEN_DIM,
+    head_mode=HEAD_MODE, eval_prefixes=EVAL_PREFIXES,
+    lr=LR, epochs=EPOCHS, batch_size=BATCH_SIZE,
+    patience=PATIENCE, weight_decay=WEIGHT_DECAY,
+    seed=SEED, l1_lambda=L1_LAMBDA,
+    experiment_name="expN_name",
+)
+```
+
+`--fast` overrides are hardcoded smoke-test values inside `main()` — they are not part of the CONFIG block (they are not something you tune).
 
 ---
 

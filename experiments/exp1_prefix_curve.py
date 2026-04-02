@@ -58,6 +58,23 @@ from evaluation.prefix_eval import evaluate_prefix_sweep, evaluate_pca_baseline
 
 
 # ==============================================================================
+# CONFIG — edit here to change the full run; use --fast for a quick smoke test
+# ==============================================================================
+DATASET       = "mnist"
+EMBED_DIM     = 64
+HIDDEN_DIM    = 256
+HEAD_MODE     = "shared_head"
+EVAL_PREFIXES = [1, 2, 4, 8, 16, 32, 64]
+EPOCHS        = 20
+PATIENCE      = 5
+LR            = 1e-3
+BATCH_SIZE    = 128
+WEIGHT_DECAY  = 1e-4
+SEED          = 42
+# ==============================================================================
+
+
+# ==============================================================================
 # Helpers
 # ==============================================================================
 
@@ -258,9 +275,22 @@ def main():
 
     # ------------------------------------------------------------------
     # Step 1: Configure the experiment
-    # All settings live in config.py — edit defaults there, not here.
+    # All settings live in the CONFIG block above — edit there, not here.
     # ------------------------------------------------------------------
-    cfg = ExpConfig()
+    cfg = ExpConfig(
+        dataset       = DATASET,
+        embed_dim     = EMBED_DIM,
+        hidden_dim    = HIDDEN_DIM,
+        head_mode     = HEAD_MODE,
+        eval_prefixes = EVAL_PREFIXES,
+        lr            = LR,
+        epochs        = EPOCHS,
+        batch_size    = BATCH_SIZE,
+        patience      = PATIENCE,
+        weight_decay  = WEIGHT_DECAY,
+        seed          = SEED,
+        experiment_name = "exp1_prefix_curve",
+    )
     run_start = time.time()   # record wall-clock start for runtime.txt
 
     # ------------------------------------------------------------------

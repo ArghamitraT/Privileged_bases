@@ -70,7 +70,7 @@ from scipy.stats import spearmanr
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from config import ExpConfig
-from utility import create_run_dir, save_runtime, save_code_snapshot, get_path
+from utility import create_run_dir, save_runtime, save_code_snapshot, get_path, load_config_json
 from data.loader import load_data
 from models.encoder import MLPEncoder
 from models.heads import build_head
@@ -80,15 +80,38 @@ from experiments.exp7_mrl_vs_ff import train_single_model, get_embeddings_np
 
 
 # ==============================================================================
+# CONFIG — edit here to change the full run; use --fast for a quick smoke test
+# ==============================================================================
+DATASET           = "mnist"
+EMBED_DIM         = 64
+HIDDEN_DIM        = 256
+HEAD_MODE         = "shared_head"
+EVAL_PREFIXES     = list(range(1, EMBED_DIM + 1))  # always derived from EMBED_DIM
+EPOCHS            = 20
+PATIENCE          = 5
+LR                = 1e-3
+BATCH_SIZE        = 128
+WEIGHT_DECAY      = 1e-4
+SEED              = 42
+L1_LAMBDA         = 0.05
+MAX_PROBE_SAMPLES = 2000   # max samples used for logistic-regression importance probes
+# Path to an exp7 or exp10 output folder to load weights from (skips training).
+# Leave as "" to train from scratch. CLI --use-weights overrides this.
+USE_WEIGHTS       = "exprmnt_2026_04_01__22_04_54"
+# ==============================================================================
+
+
+# ==============================================================================
 # Module-level constants
 # ==============================================================================
 
-MODEL_NAMES = ["Standard", "L1", "MRL", "PCA"]
+MODEL_NAMES = ["Standard", "L1", "MRL", "PrefixL1", "PCA"]
 
 MODEL_COLORS = {
     "Standard": "steelblue",
     "L1":       "orchid",
     "MRL":      "darkorange",
+    "PrefixL1": "crimson",
     "PCA":      "seagreen",
 }
 
@@ -434,12 +457,51 @@ def compute_method_agreement(importance_scores, model_tag):
 # Weight loading from a saved exp7 run
 # ==============================================================================
 
+def detect_arch_from_weights(weights_dir):
+    """
+    Infer embed_dim and hidden_dim from saved encoder weights.
+
+    Reads the standard encoder checkpoint and inspects fc_out.weight:
+        shape = (embed_dim, hidden_dim)
+
+    This lets exp8 auto-configure itself when --use-weights is given,
+    without requiring the user to also pass --embed-dim.
+
+    Args:
+        weights_dir (str): Path to an exp7 or exp10 output folder.
+
+    Returns:
+        Tuple[int, int]: (embed_dim, hidden_dim) inferred from the weights.
+
+    Raises:
+        FileNotFoundError: If standard_encoder_best.pt is not found.
+    """
+    enc_path = os.path.join(weights_dir, "standard_encoder_best.pt")
+    if not os.path.isfile(enc_path):
+        raise FileNotFoundError(
+            f"Cannot detect architecture — file not found: {enc_path}"
+        )
+    state_dict = torch.load(enc_path, map_location="cpu")
+    # fc_out.weight has shape (embed_dim, hidden_dim)
+    embed_dim  = state_dict["fc_out.weight"].shape[0]
+    hidden_dim = state_dict["fc_out.weight"].shape[1]
+    print(f"[exp8] Auto-detected from weights: embed_dim={embed_dim}, hidden_dim={hidden_dim}")
+    return embed_dim, hidden_dim
+
+
 def load_models_from_dir(weights_dir, cfg, data):
     """
-    Load Standard, L1, and MRL encoder+head weights from a saved run folder.
+    Load Standard, L1, MRL, and (optionally) PrefixL1 encoder+head weights
+    from a saved run folder.
 
-    Accepts output directories from either exp7 or exp10 — weight filenames
-    are identical: standard_encoder_best.pt, l1_encoder_best.pt, mat_encoder_best.pt.
+    Accepts output directories from exp7 or exp10. Weight filenames:
+        standard_encoder_best.pt / standard_head_best.pt
+        l1_encoder_best.pt       / l1_head_best.pt
+        mat_encoder_best.pt      / mat_head_best.pt
+        pl1_encoder_best.pt      / pl1_head_best.pt  (exp10 runs only)
+
+    PrefixL1 is optional — if not found (e.g. older exp7 runs), None is
+    returned for those and PrefixL1 is omitted from downstream analysis.
 
     Args:
         weights_dir (str)       : Path to exp7 or exp10 output folder.
@@ -447,18 +509,20 @@ def load_models_from_dir(weights_dir, cfg, data):
         data        (DataSplit) : Used for input_dim and n_classes.
 
     Returns:
-        Tuple: (std_encoder, std_head, l1_encoder, l1_head, mat_encoder, mat_head)
-               All in eval mode.
+        Tuple: (std_encoder, std_head, l1_encoder, l1_head,
+                mat_encoder, mat_head, pl1_encoder, pl1_head)
+               pl1_encoder and pl1_head are None when weights not found.
+               All others are in eval mode.
 
     Raises:
-        FileNotFoundError: If any expected weight file is missing.
+        FileNotFoundError: If Standard, L1, or MRL weight files are missing.
     """
-    expected = [
+    required = [
         "standard_encoder_best.pt", "standard_head_best.pt",
         "l1_encoder_best.pt",       "l1_head_best.pt",
         "mat_encoder_best.pt",      "mat_head_best.pt",
     ]
-    for fname in expected:
+    for fname in required:
         fpath = os.path.join(weights_dir, fname)
         if not os.path.isfile(fpath):
             raise FileNotFoundError(
@@ -479,8 +543,18 @@ def load_models_from_dir(weights_dir, cfg, data):
     std_enc, std_hd = _load("standard_encoder_best.pt", "standard_head_best.pt")
     l1_enc,  l1_hd  = _load("l1_encoder_best.pt",       "l1_head_best.pt")
     mat_enc, mat_hd = _load("mat_encoder_best.pt",       "mat_head_best.pt")
+
+    # PrefixL1 weights are optional (present in exp10 runs, absent in exp7 runs)
+    pl1_enc_path = os.path.join(weights_dir, "pl1_encoder_best.pt")
+    if os.path.isfile(pl1_enc_path):
+        pl1_enc, pl1_hd = _load("pl1_encoder_best.pt", "pl1_head_best.pt")
+        print("[exp8] PrefixL1 weights found and loaded.")
+    else:
+        pl1_enc, pl1_hd = None, None
+        print("[exp8] PrefixL1 weights not found in this folder — skipping PrefixL1.")
+
     print("[exp8] Weights loaded successfully.")
-    return std_enc, std_hd, l1_enc, l1_hd, mat_enc, mat_hd
+    return std_enc, std_hd, l1_enc, l1_hd, mat_enc, mat_hd, pl1_enc, pl1_hd
 
 
 # ==============================================================================
@@ -936,52 +1010,88 @@ def main():
     args = parser.parse_args()
 
     # ------------------------------------------------------------------
-    # Step 2: Config
+    # Step 2: Resolve weights_dir (CLI wins over CONFIG)
+    # If the path is not absolute, resolve it relative to files/results/
+    # so the user can set just the folder name, e.g. "exprmnt_2026_04_01__22_04_54"
+    # ------------------------------------------------------------------
+    weights_dir = args.use_weights or (USE_WEIGHTS if USE_WEIGHTS else None)
+    if weights_dir and not os.path.isabs(weights_dir):
+        weights_dir = os.path.join(get_path("files/results"), weights_dir)
+    if weights_dir:
+        print(f"[exp8] Using saved weights from: {weights_dir}")
+
+    # ------------------------------------------------------------------
+    # Step 3: Config
+    # Priority:
+    #   --fast         → fixed smoke-test values (always)
+    #   weights_dir    → load config.json from that folder (all fields adopted);
+    #                    fall back to weight-file detection if config.json absent
+    #   otherwise      → use this script's CONFIG block
     # ------------------------------------------------------------------
     if args.fast:
         cfg = ExpConfig(
-            dataset="digits",
-            embed_dim=16,
-            hidden_dim=128,
-            head_mode="shared_head",
-            eval_prefixes=[1, 2, 4, 8, 16],
-            epochs=5,
-            patience=3,
-            seed=42,
-            l1_lambda=0.05,
+            dataset="digits", embed_dim=16, hidden_dim=128,
+            head_mode="shared_head", eval_prefixes=[1, 2, 4, 8, 16],
+            lr=LR, epochs=5, batch_size=BATCH_SIZE, patience=3,
+            weight_decay=WEIGHT_DECAY, seed=SEED, l1_lambda=L1_LAMBDA,
             experiment_name="exp8_dim_importance",
         )
         max_probe_samples = 500
+
+    elif weights_dir:
+        # Load every field from the saved run's config.json if available
+        saved = load_config_json(weights_dir)
+        if saved:
+            print("[exp8] Adopting all config fields from saved run's config.json")
+            # --embed-dim CLI flag still overrides embed_dim if explicitly given
+            if args.embed_dim is not None:
+                saved["embed_dim"]     = args.embed_dim
+                saved["eval_prefixes"] = list(range(1, args.embed_dim + 1))
+            else:
+                # Ensure eval_prefixes is always dense [1..embed_dim]
+                saved["eval_prefixes"] = list(range(1, saved["embed_dim"] + 1))
+            saved["experiment_name"] = "exp8_dim_importance"
+            cfg = ExpConfig(**saved)
+        else:
+            # config.json absent (old run) — fall back to weight-file detection
+            print("[exp8] config.json not found; detecting architecture from weights.")
+            detected_embed, detected_hidden = detect_arch_from_weights(weights_dir)
+            embed_dim  = args.embed_dim if args.embed_dim is not None else detected_embed
+            cfg = ExpConfig(
+                dataset       = DATASET,
+                embed_dim     = embed_dim,
+                hidden_dim    = detected_hidden,
+                head_mode     = HEAD_MODE,
+                eval_prefixes = list(range(1, embed_dim + 1)),
+                lr            = LR, epochs=EPOCHS, batch_size=BATCH_SIZE,
+                patience      = PATIENCE, weight_decay=WEIGHT_DECAY,
+                seed          = SEED, l1_lambda=L1_LAMBDA,
+                experiment_name = "exp8_dim_importance",
+            )
+        max_probe_samples = MAX_PROBE_SAMPLES
+
     else:
         cfg = ExpConfig(
-            dataset="mnist",
-            embed_dim=64,
-            hidden_dim=256,
-            head_mode="shared_head",
-            eval_prefixes=[1, 2, 4, 8, 16, 32, 64],
-            # eval_prefixes=list(range(1, 65)),
-            epochs=20,
-            patience=5,
-            seed=42,
-            l1_lambda=0.05,
-            experiment_name="exp8_dim_importance",
+            dataset       = DATASET,
+            embed_dim     = EMBED_DIM,
+            hidden_dim    = HIDDEN_DIM,
+            head_mode     = HEAD_MODE,
+            eval_prefixes = EVAL_PREFIXES,
+            lr            = LR,
+            epochs        = EPOCHS,
+            batch_size    = BATCH_SIZE,
+            patience      = PATIENCE,
+            weight_decay  = WEIGHT_DECAY,
+            seed          = SEED,
+            l1_lambda     = L1_LAMBDA,
+            experiment_name = "exp8_dim_importance",
         )
-        max_probe_samples = 2000
-
-    # Apply --embed-dim override: set embed_dim and use dense prefixes [1..N].
-    # Dense matches exp10's eval convention; powers-of-2 would disagree with
-    # the weights that exp10 produced.
-    if args.embed_dim is not None:
-        cfg.embed_dim     = args.embed_dim
-        cfg.eval_prefixes = list(range(1, cfg.embed_dim + 1))
-        print(f"[exp8] --embed-dim override: embed_dim={cfg.embed_dim}, "
-              f"eval_prefixes=1..{cfg.embed_dim}")
+        max_probe_samples = MAX_PROBE_SAMPLES
 
     set_seeds(cfg.seed)
-    weights_dir = args.use_weights  # None or string path
 
     # ------------------------------------------------------------------
-    # Step 3: Setup output directory + save description
+    # Step 4: Setup output directory + save description
     # ------------------------------------------------------------------
     run_dir = create_run_dir()
     print(f"[exp8] Outputs will be saved to: {run_dir}\n")
@@ -1002,8 +1112,8 @@ def main():
         print("=" * 60)
         print("STEP 5: Loading weights from existing run")
         print("=" * 60)
-        std_encoder, std_head, l1_encoder, l1_head, mat_encoder, mat_head = \
-            load_models_from_dir(weights_dir, cfg, data)
+        std_encoder, std_head, l1_encoder, l1_head, mat_encoder, mat_head, \
+            pl1_encoder, pl1_head = load_models_from_dir(weights_dir, cfg, data)
     else:
         print("=" * 60)
         print("STEP 5a: Training Standard model")
@@ -1026,13 +1136,20 @@ def main():
             cfg, data, run_dir, model_type="matryoshka", model_tag="mat"
         )
 
+        print("=" * 60)
+        print(f"STEP 5d: Training PrefixL1 model  (lambda={cfg.l1_lambda})")
+        print("=" * 60)
+        pl1_encoder, pl1_head = train_single_model(
+            cfg, data, run_dir, model_type="prefix_l1", model_tag="pl1"
+        )
+
     # ------------------------------------------------------------------
     # Step 6: Training curves (MANDATORY)
     # ------------------------------------------------------------------
     print("=" * 60)
     print("STEP 6: Plotting training curves")
     print("=" * 60)
-    plot_training_curves(run_dir, model_tags=["standard", "l1", "mat"])
+    plot_training_curves(run_dir, model_tags=["standard", "l1", "mat", "pl1"])
 
     # ------------------------------------------------------------------
     # Step 7: Extract embeddings for all 4 models
@@ -1065,6 +1182,22 @@ def main():
         "MRL":      (Z_train_mrl, Z_test_mrl),
         "PCA":      (Z_train_pca, Z_test_pca),
     }
+
+    # PrefixL1 is optional — present when trained in this run or loaded from exp10
+    if pl1_encoder is not None:
+        Z_train_pl1 = get_embeddings_np(pl1_encoder, data.X_train)
+        Z_test_pl1  = get_embeddings_np(pl1_encoder, data.X_test)
+        print(f"[exp8] PrefixL1: train={Z_train_pl1.shape}, test={Z_test_pl1.shape}")
+        # Insert before PCA so ordering matches MODEL_NAMES
+        embeddings = {
+            "Standard": (Z_train_std, Z_test_std),
+            "L1":       (Z_train_l1,  Z_test_l1),
+            "MRL":      (Z_train_mrl, Z_test_mrl),
+            "PrefixL1": (Z_train_pl1, Z_test_pl1),
+            "PCA":      (Z_train_pca, Z_test_pca),
+        }
+    else:
+        print("[exp8] PrefixL1 not available — analysis will cover Standard, L1, MRL, PCA only.")
 
     # ------------------------------------------------------------------
     # Step 8: Analysis 1 — compute importance scores

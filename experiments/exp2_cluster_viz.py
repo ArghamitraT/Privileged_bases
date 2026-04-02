@@ -86,6 +86,30 @@ from losses.mat_loss import build_loss
 from training.trainer import train
 from evaluation.prefix_eval import evaluate_prefix_sweep, evaluate_pca_baseline
 
+
+# ==============================================================================
+# CONFIG — edit here to change the full run; use --fast for a quick smoke test
+# ==============================================================================
+DATASET            = "mnist"
+EMBED_DIM          = 64
+HIDDEN_DIM         = 256
+HEAD_MODE          = "shared_head"
+EVAL_PREFIXES      = [1, 2, 4, 8, 16, 32, 64]
+EPOCHS             = 20
+PATIENCE           = 5
+LR                 = 1e-3
+BATCH_SIZE         = 128
+WEIGHT_DECAY       = 1e-4
+SEED               = 42
+# Visualization / metric settings (not part of ExpConfig)
+VIZ_PREFIXES       = [1, 2, 4, 8]    # which prefix sizes to plot t-SNE/UMAP for
+MAX_VIZ_SAMPLES    = 3000             # max samples for 2-D projections
+MAX_METRIC_SAMPLES = 2000             # max samples for silhouette score
+TSNE_N_ITER        = 1000             # t-SNE iterations
+TSNE_PERPLEXITY    = 40               # t-SNE perplexity
+# ==============================================================================
+
+
 # umap-learn is imported lazily inside reduce_to_2d() to avoid initialising
 # numba's thread pool at module load time. Numba conflicts with OpenBLAS when
 # numpy allocates large arrays (e.g. MNIST 70k×784), causing a segfault.
@@ -1393,38 +1417,16 @@ def main():
             print(f"[exp2] --use-exp1: resolved weights dir to {args.weights_dir}")
 
     # ------------------------------------------------------------------
-    # Config — chosen to match the saved weights when weights-dir is given,
-    # or to be fast/full when training from scratch.
+    # Config — build from CONFIG block above; --fast overrides to smoke-test
+    # values; --weights-dir must match the architecture that was saved.
     # ------------------------------------------------------------------
-    if args.weights_dir:
-        # Config MUST match exp1 architecture to load weights correctly.
-        # The exp1 run at exprmnt_2026_03_08__16_36_30 used:
-        #   dataset=mnist, embed_dim=64, hidden_dim=256, shared_head, seed=42
+    if args.fast:
+        # Smoke-test overrides: tiny dataset, quick epochs
         cfg = ExpConfig(
-            dataset="mnist",
-            embed_dim=64,
-            hidden_dim=256,
-            head_mode="shared_head",
-            eval_prefixes=[1, 2, 4, 8, 16, 32, 64],
-            seed=42,
-            experiment_name="exp2_cluster_viz",
-        )
-        viz_prefixes       = [1, 2, 4, 8] if not args.fast else [1, 4]
-        max_viz_samples    = 3000          if not args.fast else 500
-        max_metric_samples = 2000          if not args.fast else 500
-        tsne_n_iter        = 1000          if not args.fast else 300
-        tsne_perplexity    = 40            if not args.fast else 20
-
-    elif args.fast:
-        # Fast scratch run: use digits (tiny, no download needed)
-        cfg = ExpConfig(
-            dataset="digits",
-            embed_dim=16,
-            hidden_dim=128,
-            eval_prefixes=[1, 2, 4, 8, 16],
-            epochs=5,
-            patience=3,
-            seed=42,
+            dataset="digits", embed_dim=16, hidden_dim=128,
+            head_mode="shared_head", eval_prefixes=[1, 2, 4, 8, 16],
+            lr=LR, epochs=5, batch_size=BATCH_SIZE, patience=3,
+            weight_decay=WEIGHT_DECAY, seed=SEED,
             experiment_name="exp2_cluster_viz",
         )
         viz_prefixes       = [1, 2, 4, 8]
@@ -1432,22 +1434,27 @@ def main():
         max_metric_samples = 500
         tsne_n_iter        = 300
         tsne_perplexity    = 20
-
     else:
-        # Full scratch run: MNIST, same settings as exp1
+        # Full run (also used when loading weights from --weights-dir)
         cfg = ExpConfig(
-            dataset="mnist",
-            embed_dim=64,
-            hidden_dim=256,
-            eval_prefixes=[1, 2, 4, 8, 16, 32, 64],
-            seed=42,
-            experiment_name="exp2_cluster_viz",
+            dataset       = DATASET,
+            embed_dim     = EMBED_DIM,
+            hidden_dim    = HIDDEN_DIM,
+            head_mode     = HEAD_MODE,
+            eval_prefixes = EVAL_PREFIXES,
+            lr            = LR,
+            epochs        = EPOCHS,
+            batch_size    = BATCH_SIZE,
+            patience      = PATIENCE,
+            weight_decay  = WEIGHT_DECAY,
+            seed          = SEED,
+            experiment_name = "exp2_cluster_viz",
         )
-        viz_prefixes       = [1, 2, 4, 8]
-        max_viz_samples    = 3000
-        max_metric_samples = 2000
-        tsne_n_iter        = 1000
-        tsne_perplexity    = 40
+        viz_prefixes       = VIZ_PREFIXES
+        max_viz_samples    = MAX_VIZ_SAMPLES
+        max_metric_samples = MAX_METRIC_SAMPLES
+        tsne_n_iter        = TSNE_N_ITER
+        tsne_perplexity    = TSNE_PERPLEXITY
 
     set_seeds(cfg.seed)
 

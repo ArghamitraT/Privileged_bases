@@ -95,11 +95,29 @@ from experiments.exp8_dim_importance import (
 
 
 # ==============================================================================
-# Module-level constants
+# CONFIG — edit here to change the full run; use --fast for a quick smoke test
+# ==============================================================================
+DATASET           = "mnist"
+EMBED_DIM         = 64
+HIDDEN_DIM        = 256
+HEAD_MODE         = "shared_head"
+EVAL_PREFIXES     = list(range(1, 65))   # dense: 1..64
+EPOCHS            = 20
+PATIENCE          = 5
+LR                = 1e-3
+BATCH_SIZE        = 128
+WEIGHT_DECAY      = 1e-4
+SEED              = 42
+L1_LAMBDA         = 0.05
+DATA_SEEDS        = [42, 123]   # one full run per data seed (seed 42 matches prior exps)
+MAX_PROBE_SAMPLES = 2000        # max samples for logistic-regression importance probes
+MAX_LR_SAMPLES    = 10000       # max samples for linear classification sweep
 # ==============================================================================
 
-# The two data seeds to run.  Seed 42 matches all prior experiments.
-DATA_SEEDS = [42, 123]
+
+# ==============================================================================
+# Module-level constants
+# ==============================================================================
 
 MODEL_NAMES = ["Standard", "L1", "MRL", "PCA"]
 
@@ -821,36 +839,34 @@ def main():
     # ------------------------------------------------------------------
     if args.fast:
         cfg = ExpConfig(
-            dataset       = "digits",
-            embed_dim     = 16,
-            hidden_dim    = 128,
-            head_mode     = "shared_head",
-            eval_prefixes = list(range(1, 17)),   # dense: 1..16
-            epochs        = 5,
-            patience      = 3,
-            seed          = 42,
-            l1_lambda     = 0.05,
-            experiment_name = "exp9_dense_prefix",
+            dataset="digits", embed_dim=16, hidden_dim=128,
+            head_mode="shared_head", eval_prefixes=list(range(1, 17)),
+            lr=LR, epochs=5, batch_size=BATCH_SIZE, patience=3,
+            weight_decay=WEIGHT_DECAY, seed=SEED, l1_lambda=L1_LAMBDA,
+            experiment_name="exp9_dense_prefix",
         )
-        data_seeds        = [42]          # single seed for smoke test
+        data_seeds        = [42]   # single seed for smoke test
         max_probe_samples = 500
         max_lr_samples    = 1000
     else:
         cfg = ExpConfig(
-            dataset       = "mnist",
-            embed_dim     = 64,
-            hidden_dim    = 256,
-            head_mode     = "shared_head",
-            eval_prefixes = list(range(1, 65)),   # dense: 1..64
-            epochs        = 20,
-            patience      = 5,
-            seed          = 42,
-            l1_lambda     = 0.05,
+            dataset       = DATASET,
+            embed_dim     = EMBED_DIM,
+            hidden_dim    = HIDDEN_DIM,
+            head_mode     = HEAD_MODE,
+            eval_prefixes = EVAL_PREFIXES,
+            lr            = LR,
+            epochs        = EPOCHS,
+            batch_size    = BATCH_SIZE,
+            patience      = PATIENCE,
+            weight_decay  = WEIGHT_DECAY,
+            seed          = SEED,
+            l1_lambda     = L1_LAMBDA,
             experiment_name = "exp9_dense_prefix",
         )
-        data_seeds        = DATA_SEEDS    # [42, 123]
-        max_probe_samples = 2000
-        max_lr_samples    = 10000
+        data_seeds        = DATA_SEEDS
+        max_probe_samples = MAX_PROBE_SAMPLES
+        max_lr_samples    = MAX_LR_SAMPLES
 
     # ------------------------------------------------------------------
     # Step 3: Create output directory + save description

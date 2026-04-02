@@ -75,6 +75,25 @@ from evaluation.prefix_eval import evaluate_prefix_sweep, evaluate_pca_baseline
 
 
 # ==============================================================================
+# CONFIG — edit here to change the full run; use --fast for a quick smoke test
+# ==============================================================================
+DATASET       = "mnist"
+EMBED_DIM     = 64
+HIDDEN_DIM    = 256
+HEAD_MODE     = "shared_head"
+EVAL_PREFIXES = [1, 2, 4, 8, 16, 32, 64]
+EPOCHS        = 20
+PATIENCE      = 5
+LR            = 1e-3
+BATCH_SIZE    = 128
+WEIGHT_DECAY  = 1e-4
+SEED          = 42
+L1_LAMBDA     = 0.05
+MAX_1NN_DB    = None   # cap on 1-NN training-set size; None = use full set
+# ==============================================================================
+
+
+# ==============================================================================
 # Reproducibility
 # ==============================================================================
 
@@ -567,7 +586,7 @@ def plot_all_curves(linear_results, nn1_results, eval_prefixes, run_dir, l1_lamb
     print("[exp7] Saved combined_comparison.png")
 
 
-def plot_training_curves(run_dir, model_tags):
+def plot_training_curves(run_dir, model_tags, fig_stamp: str = ""):
     """
     Parse training log files and plot train/val loss vs epoch.
 
@@ -577,6 +596,9 @@ def plot_training_curves(run_dir, model_tags):
     Args:
         run_dir    (str)       : Output directory containing log files.
         model_tags (List[str]) : Tags to attempt to read (e.g. ['standard','l1','mat']).
+        fig_stamp  (str)       : Optional timestamp suffix for the output filename,
+                                 e.g. '_2026_04_01__22_04_54'. Prevents overwriting
+                                 old figures when rerunning in the same folder. Default: "".
     """
     histories = {}
     for tag in model_tags:
@@ -619,10 +641,10 @@ def plot_training_curves(run_dir, model_tags):
 
     fig.suptitle("Training Curves  —  Standard / L1 / MRL", fontsize=13)
     plt.tight_layout()
-    plt.savefig(os.path.join(run_dir, "training_curves.png"),
-                dpi=150, bbox_inches="tight")
+    fname = f"training_curves{fig_stamp}.png"
+    plt.savefig(os.path.join(run_dir, fname), dpi=150, bbox_inches="tight")
     plt.close()
-    print("[exp7] Saved training_curves.png")
+    print(f"[exp7] Saved {fname}")
 
 
 # ==============================================================================
@@ -692,32 +714,30 @@ def main():
     # ------------------------------------------------------------------
     if args.fast:
         cfg = ExpConfig(
-            dataset="digits",
-            embed_dim=16,
-            hidden_dim=128,
-            head_mode="shared_head",
-            eval_prefixes=[1, 2, 4, 8, 16],
-            epochs=5,
-            patience=3,
-            seed=42,
-            l1_lambda=0.05,
+            dataset="digits", embed_dim=16, hidden_dim=128,
+            head_mode="shared_head", eval_prefixes=[1, 2, 4, 8, 16],
+            lr=LR, epochs=5, batch_size=BATCH_SIZE, patience=3,
+            weight_decay=WEIGHT_DECAY, seed=SEED, l1_lambda=L1_LAMBDA,
             experiment_name="exp7_mrl_vs_ff",
         )
         max_1nn_db = 500
     else:
         cfg = ExpConfig(
-            dataset="mnist",
-            embed_dim=64,
-            hidden_dim=256,
-            head_mode="shared_head",
-            eval_prefixes=[1, 2, 4, 8, 16, 32, 64],
-            epochs=20,
-            patience=5,
-            seed=42,
-            l1_lambda=0.05,
-            experiment_name="exp7_mrl_vs_ff",
+            dataset       = DATASET,
+            embed_dim     = EMBED_DIM,
+            hidden_dim    = HIDDEN_DIM,
+            head_mode     = HEAD_MODE,
+            eval_prefixes = EVAL_PREFIXES,
+            lr            = LR,
+            epochs        = EPOCHS,
+            batch_size    = BATCH_SIZE,
+            patience      = PATIENCE,
+            weight_decay  = WEIGHT_DECAY,
+            seed          = SEED,
+            l1_lambda     = L1_LAMBDA,
+            experiment_name = "exp7_mrl_vs_ff",
         )
-        max_1nn_db = None   # use full 56k training set for 1-NN
+        max_1nn_db = MAX_1NN_DB
 
     set_seeds(cfg.seed)
 

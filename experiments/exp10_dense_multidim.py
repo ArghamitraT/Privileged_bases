@@ -1,7 +1,7 @@
 """
 Script: experiments/exp10_dense_multidim.py
 --------------------------------------------
-Experiment 10 — Dense Prefix Sweep: MRL vs Standard vs L1 vs PCA (No FF).
+Experiment 10 — Dense Prefix Sweep: MRL vs Standard vs L1 vs PrefixL1 vs PCA (No FF).
 
 Exp7 without Fixed-Feature models, evaluated at every dimension k = 1..embed_dim
 (dense sweep). Produces smooth, continuous accuracy curves showing exactly where
@@ -12,40 +12,55 @@ Key differences vs Exp7:
   - Dense eval: k = 1, 2, ..., embed_dim  (not just powers of 2)
   - Supports --embed-dim flag for 8, 16, 32, 64
   - Linear x-axis on plots (not log scale) to show the continuous curve
+  - Supports --use-weights to regenerate plots from a prior run without retraining
 
 Models trained:
   1. Standard  — plain CE loss on full embed_dim embedding
   2. L1        — CE + L1 regularization on embedding activations
   3. MRL (Mat) — CE summed at every prefix scale (Matryoshka loss)
-  4. PCA       — analytical baseline (variance-ordered components)
+  4. PrefixL1  — CE + front-loaded weighted L1 (dim j penalised by embed_dim-j)
+  5. PCA       — analytical baseline (variance-ordered components)
+
+PrefixL1 note:
+  Dimensions are *reversed* before the prefix sweep (option A — "flip").
+  The early dims of PrefixL1 carry the most sparsity pressure (lightest info);
+  flipping puts the most informative dims first, so x-axis reads best-first.
+  Legend label: "PrefixL1 (rev)".
+
+Figure naming:
+  All figures produced by this script have a timestamp suffix in their filename
+  (e.g. linear_accuracy_curve_2026_04_01__22_04_54.png) so that re-running with
+  --use-weights into a fresh run folder never overwrites existing images.
 
 Evaluation metrics at each k = 1..embed_dim:
   a. Linear classification accuracy  (logistic regression probe on k-dim embedding)
   b. 1-NN accuracy  (1-nearest-neighbor; train set as database, test set as queries)
 
 Inputs:
-  --fast          : smoke test — digits dataset, 5 epochs, subsampled 1-NN
-  --embed-dim N   : override embed_dim (8, 16, 32, 64); eval_prefixes = [1..N]
+  --fast             : smoke test — digits dataset, 5 epochs, subsampled 1-NN
+  --embed-dim N      : override embed_dim (8, 16, 32, 64); ignored if --use-weights set
+  --use-weights PATH : load saved weights from PATH (folder name or full path),
+                       skip training and regenerate all plots
 
 Outputs (all in a new timestamped run folder):
-  linear_accuracy_curve.png  : linear accuracy vs k — 4 model lines
-  1nn_accuracy_curve.png     : 1-NN accuracy vs k — 4 model lines
-  combined_comparison.png    : 2-panel (linear top, 1-NN bottom)
-  training_curves.png        : loss vs epoch for Standard, L1, MRL (MANDATORY)
-  results_summary.txt        : full table k x model x linear_acc x 1nn_acc
+  linear_accuracy_curve_{stamp}.png  : linear accuracy vs k — up to 5 model lines
+  1nn_accuracy_curve_{stamp}.png     : 1-NN accuracy vs k — up to 5 model lines
+  combined_comparison_{stamp}.png    : 2-panel (linear top, 1-NN bottom)
+  training_curves_{stamp}.png        : loss vs epoch (skipped when loading weights)
+  results_summary.txt                : full table k x model x linear_acc x 1nn_acc
   experiment_description.log
   runtime.txt
   code_snapshot/
 
 Usage:
-    python experiments/exp10_dense_multidim.py                       # full run (MNIST, embed_dim=64)
-    python experiments/exp10_dense_multidim.py --fast                # smoke test (digits, 5 epochs)
-    python experiments/exp10_dense_multidim.py --embed-dim 8         # full run, embed_dim=8
-    python experiments/exp10_dense_multidim.py --embed-dim 16        # full run, embed_dim=16
-    python experiments/exp10_dense_multidim.py --embed-dim 32        # full run, embed_dim=32
-    python experiments/exp10_dense_multidim.py --embed-dim 8 --fast  # smoke test at dim=8
-    python tests/run_tests_exp10.py --fast                           # unit tests only
-    python tests/run_tests_exp10.py                                  # unit tests + e2e smoke
+    python experiments/exp10_dense_multidim.py                            # full run (MNIST, embed_dim=8)
+    python experiments/exp10_dense_multidim.py --fast                     # smoke test (digits, 5 epochs)
+    python experiments/exp10_dense_multidim.py --embed-dim 16             # full run, embed_dim=16
+    python experiments/exp10_dense_multidim.py --embed-dim 32             # full run, embed_dim=32
+    python experiments/exp10_dense_multidim.py --embed-dim 8 --fast       # smoke test at dim=8
+    python experiments/exp10_dense_multidim.py --use-weights exprmnt_XYZ  # regenerate from saved weights
+    python tests/run_tests_exp10.py --fast                                # unit tests only
+    python tests/run_tests_exp10.py                                       # unit tests + e2e smoke
 """
 
 import os
@@ -68,7 +83,10 @@ from sklearn.linear_model import LogisticRegression
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from config import ExpConfig
-from utility import create_run_dir, save_runtime, save_code_snapshot
+from utility import (
+    create_run_dir, save_runtime, save_code_snapshot,
+    save_config_json, load_config_json, get_path,
+)
 from data.loader import load_data
 
 # Reuse training helpers and 1-NN evaluation from exp7 (no duplication)
@@ -80,6 +98,31 @@ from experiments.exp7_mrl_vs_ff import (
     evaluate_pca_1nn,
     plot_training_curves,
 )
+
+# Needed for loading saved weights without retraining
+from models.encoder import MLPEncoder
+from models.heads import build_head
+
+
+# ==============================================================================
+# CONFIG — edit here to change the full run; use --fast for a quick smoke test
+# ==============================================================================
+DATASET       = "mnist"
+EMBED_DIM     = 8
+HIDDEN_DIM    = 256
+HEAD_MODE     = "shared_head"
+EVAL_PREFIXES = list(range(1, EMBED_DIM + 1))   # always derived from EMBED_DIM; --embed-dim overrides both
+EPOCHS        = 10
+PATIENCE      = 5
+LR            = 1e-3
+BATCH_SIZE    = 128
+WEIGHT_DECAY  = 1e-4
+SEED          = 42
+L1_LAMBDA     = 0.05
+MAX_1NN_DB    = 10_000   # cap on 1-NN training-set size for speed on dense sweep
+USE_WEIGHTS   = "exprmnt_2026_04_01__22_04_54"       # folder name (e.g. "exprmnt_2026_04_01__22_04_54") or full path;
+                         # if set, skip training and load weights to regenerate plots
+# ==============================================================================
 
 
 # ==============================================================================
@@ -100,6 +143,64 @@ def set_seeds(seed: int):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
     print(f"[exp10] Random seeds set to {seed}")
+
+
+# ==============================================================================
+# Weight loader — load saved encoder/head pairs from a prior run directory
+# ==============================================================================
+
+def load_weights_from_dir(weights_dir: str, cfg, input_dim: int, n_classes: int):
+    """
+    Load encoder and head weights saved by train_single_model for all four models.
+
+    File naming convention matches train_single_model's model_tag:
+        {model_tag}_encoder_best.pt  /  {model_tag}_head_best.pt
+    PrefixL1 (tag "pl1") is optional — returns None pair if files are absent.
+
+    Args:
+        weights_dir (str)      : Directory containing the saved .pt files.
+        cfg         (ExpConfig): Config used to reconstruct model architecture.
+        input_dim   (int)      : Input feature dimension (from data).
+        n_classes   (int)      : Number of output classes (from data).
+
+    Returns:
+        tuple: (std_enc, std_hd, l1_enc, l1_hd, mat_enc, mat_hd, pl1_enc, pl1_hd)
+               pl1_enc and pl1_hd are None if pl1_encoder_best.pt is absent.
+    """
+    device = torch.device("cpu")
+
+    def _load_pair(enc_tag, hd_tag):
+        enc = MLPEncoder(
+            input_dim=input_dim,
+            hidden_dim=cfg.hidden_dim,
+            embed_dim=cfg.embed_dim,
+        )
+        enc_path = os.path.join(weights_dir, enc_tag)
+        enc.load_state_dict(torch.load(enc_path, map_location=device))
+        enc.eval()
+        print(f"  [load] Encoder loaded from {enc_tag}")
+
+        hd = build_head(cfg, n_classes=n_classes)
+        hd_path = os.path.join(weights_dir, hd_tag)
+        hd.load_state_dict(torch.load(hd_path, map_location=device))
+        hd.eval()
+        print(f"  [load] Head    loaded from {hd_tag}")
+        return enc, hd
+
+    print(f"[exp10] Loading saved weights from {weights_dir}")
+
+    std_enc, std_hd = _load_pair("standard_encoder_best.pt", "standard_head_best.pt")
+    l1_enc,  l1_hd  = _load_pair("l1_encoder_best.pt",       "l1_head_best.pt")
+    mat_enc, mat_hd = _load_pair("mat_encoder_best.pt",      "mat_head_best.pt")
+
+    pl1_enc_path = os.path.join(weights_dir, "pl1_encoder_best.pt")
+    if os.path.isfile(pl1_enc_path):
+        pl1_enc, pl1_hd = _load_pair("pl1_encoder_best.pt", "pl1_head_best.pt")
+    else:
+        pl1_enc, pl1_hd = None, None
+        print("  [load] pl1_encoder_best.pt not found — PrefixL1 will be skipped")
+
+    return std_enc, std_hd, l1_enc, l1_hd, mat_enc, mat_hd, pl1_enc, pl1_hd
 
 
 # ==============================================================================
@@ -260,12 +361,13 @@ MODEL_STYLES = {
     "Standard": ("steelblue",  "o-",  "Standard"),
     "L1":       ("orchid",     "D-",  "L1"),
     "MRL":      ("darkorange", "s-",  "MRL"),
+    "PrefixL1": ("crimson",    "^-",  "PrefixL1 (rev)"),
     "PCA":      ("seagreen",   "x--", "PCA"),
 }
 
 
 def _single_accuracy_plot(results_dict, eval_prefixes, ylabel, title,
-                           out_path, l1_lambda):
+                           out_path, l1_lambda, fig_stamp: str = ""):
     """
     Plot accuracy vs prefix k (linear x-axis) and save.
 
@@ -274,9 +376,14 @@ def _single_accuracy_plot(results_dict, eval_prefixes, ylabel, title,
         eval_prefixes (list)  : x-axis values.
         ylabel        (str)   : y-axis label.
         title         (str)   : Plot title.
-        out_path      (str)   : Where to save the PNG.
+        out_path      (str)   : Base output path (fig_stamp is inserted before .png).
         l1_lambda     (float) : Annotates the L1 line label.
+        fig_stamp     (str)   : Timestamp suffix inserted before .png extension.
     """
+    # Insert fig_stamp before the .png extension
+    if fig_stamp:
+        base, ext = os.path.splitext(out_path)
+        out_path = f"{base}{fig_stamp}{ext}"
     plt.style.use("seaborn-v0_8-whitegrid")
     fig, ax = plt.subplots(figsize=(10, 5))
 
@@ -301,7 +408,8 @@ def _single_accuracy_plot(results_dict, eval_prefixes, ylabel, title,
     print(f"[exp10] Saved {os.path.basename(out_path)}")
 
 
-def plot_all_curves(linear_results, nn1_results, eval_prefixes, run_dir, l1_lambda):
+def plot_all_curves(linear_results, nn1_results, eval_prefixes, run_dir,
+                    l1_lambda, fig_stamp: str = ""):
     """
     Save three plots: linear accuracy, 1-NN accuracy, and combined 2-panel.
 
@@ -311,6 +419,7 @@ def plot_all_curves(linear_results, nn1_results, eval_prefixes, run_dir, l1_lamb
         eval_prefixes  (list)  : x-axis values (dense 1..embed_dim).
         run_dir        (str)   : Output directory.
         l1_lambda      (float) : Used in L1 legend label.
+        fig_stamp      (str)   : Timestamp suffix inserted before .png extension.
     """
     _single_accuracy_plot(
         linear_results, eval_prefixes,
@@ -318,6 +427,7 @@ def plot_all_curves(linear_results, nn1_results, eval_prefixes, run_dir, l1_lamb
         title="Linear Accuracy vs Prefix k  (Standard vs L1 vs MRL vs PCA — dense)",
         out_path=os.path.join(run_dir, "linear_accuracy_curve.png"),
         l1_lambda=l1_lambda,
+        fig_stamp=fig_stamp,
     )
 
     _single_accuracy_plot(
@@ -326,6 +436,7 @@ def plot_all_curves(linear_results, nn1_results, eval_prefixes, run_dir, l1_lamb
         title="1-NN Accuracy vs Prefix k  (Standard vs L1 vs MRL vs PCA — dense)",
         out_path=os.path.join(run_dir, "1nn_accuracy_curve.png"),
         l1_lambda=l1_lambda,
+        fig_stamp=fig_stamp,
     )
 
     # Combined 2-panel
@@ -355,10 +466,10 @@ def plot_all_curves(linear_results, nn1_results, eval_prefixes, run_dir, l1_lamb
     ax_bot.set_title("1-NN Accuracy vs Prefix k  (dense)", fontsize=12)
     fig.suptitle("Standard vs L1 vs MRL vs PCA — Dense Prefix Sweep", fontsize=14, y=1.01)
     plt.tight_layout()
-    plt.savefig(os.path.join(run_dir, "combined_comparison.png"),
-                dpi=150, bbox_inches="tight")
+    combined_name = f"combined_comparison{fig_stamp}.png"
+    plt.savefig(os.path.join(run_dir, combined_name), dpi=150, bbox_inches="tight")
     plt.close()
-    print("[exp10] Saved combined_comparison.png")
+    print(f"[exp10] Saved {combined_name}")
 
 
 # ==============================================================================
@@ -421,44 +532,77 @@ def main():
     )
     parser.add_argument(
         "--embed-dim", type=int, default=None, metavar="N",
-        help="Override embed_dim (8, 16, 32, 64); eval_prefixes = [1..N].",
+        help="Override embed_dim (8, 16, 32, 64); eval_prefixes = [1..N]. Ignored when --use-weights is set.",
+    )
+    parser.add_argument(
+        "--use-weights", type=str, default=None, metavar="PATH",
+        help=(
+            "Load saved weights from PATH (folder name or full path) and regenerate "
+            "all plots without retraining. Config is adopted from config.json in PATH. "
+            "Example: --use-weights exprmnt_2026_04_01__22_04_54"
+        ),
     )
     args = parser.parse_args()
 
     # ------------------------------------------------------------------
-    # Step 2: Config
+    # Step 2: Resolve weights_dir and build config
     # ------------------------------------------------------------------
-    if args.fast:
+
+    # Priority: CLI flag > CONFIG constant > None (train from scratch)
+    weights_dir = args.use_weights or USE_WEIGHTS or None
+
+    if weights_dir:
+        # Resolve relative names (e.g. "exprmnt_XYZ") to full paths under files/results/
+        if not os.path.isabs(weights_dir):
+            weights_dir = os.path.join(get_path("files/results"), weights_dir)
+        print(f"[exp10] --use-weights: loading from {weights_dir}")
+
+        # Adopt ALL settings from the saved run's config.json (so architecture matches)
+        cfg_dict = load_config_json(weights_dir)
+        if cfg_dict:
+            cfg = ExpConfig(**cfg_dict)
+            print(f"[exp10] Config adopted from config.json (embed_dim={cfg.embed_dim})")
+        else:
+            # Fallback: build config from local constants (user must ensure they match)
+            print("[exp10] WARNING: config.json not found — using local CONFIG constants")
+            cfg = ExpConfig(
+                dataset=DATASET, embed_dim=EMBED_DIM, hidden_dim=HIDDEN_DIM,
+                head_mode=HEAD_MODE, eval_prefixes=EVAL_PREFIXES,
+                lr=LR, epochs=EPOCHS, batch_size=BATCH_SIZE, patience=PATIENCE,
+                weight_decay=WEIGHT_DECAY, seed=SEED, l1_lambda=L1_LAMBDA,
+                experiment_name="exp10_dense_multidim",
+            )
+        max_1nn_db = 500 if args.fast else MAX_1NN_DB
+
+    elif args.fast:
         cfg = ExpConfig(
-            dataset="digits",
-            embed_dim=16,
-            hidden_dim=128,
-            head_mode="shared_head",
-            eval_prefixes=list(range(1, 17)),   # overridden below if --embed-dim
-            epochs=5,
-            patience=3,
-            seed=42,
-            l1_lambda=0.05,
+            dataset="digits", embed_dim=16, hidden_dim=128,
+            head_mode="shared_head", eval_prefixes=list(range(1, 17)),
+            lr=LR, epochs=5, batch_size=BATCH_SIZE, patience=3,
+            weight_decay=WEIGHT_DECAY, seed=SEED, l1_lambda=L1_LAMBDA,
             experiment_name="exp10_dense_multidim",
         )
         max_1nn_db = 500
     else:
         cfg = ExpConfig(
-            dataset="mnist",
-            embed_dim=64,
-            hidden_dim=256,
-            head_mode="shared_head",
-            eval_prefixes=list(range(1, 65)),   # overridden below if --embed-dim
-            epochs=20,
-            patience=5,
-            seed=42,
-            l1_lambda=0.05,
-            experiment_name="exp10_dense_multidim",
+            dataset       = DATASET,
+            embed_dim     = EMBED_DIM,
+            hidden_dim    = HIDDEN_DIM,
+            head_mode     = HEAD_MODE,
+            eval_prefixes = EVAL_PREFIXES,
+            lr            = LR,
+            epochs        = EPOCHS,
+            batch_size    = BATCH_SIZE,
+            patience      = PATIENCE,
+            weight_decay  = WEIGHT_DECAY,
+            seed          = SEED,
+            l1_lambda     = L1_LAMBDA,
+            experiment_name = "exp10_dense_multidim",
         )
-        max_1nn_db = 10_000   # cap 1-NN database at 10k for speed on dense sweep
+        max_1nn_db = MAX_1NN_DB
 
-    # Apply --embed-dim override: always yields a dense [1..N] prefix list
-    if args.embed_dim is not None:
+    # Apply --embed-dim override (only when NOT loading saved weights)
+    if args.embed_dim is not None and not weights_dir:
         cfg.embed_dim     = args.embed_dim
         cfg.eval_prefixes = list(range(1, cfg.embed_dim + 1))
         print(f"[exp10] --embed-dim override: embed_dim={cfg.embed_dim}, "
@@ -471,7 +615,11 @@ def main():
     # ------------------------------------------------------------------
     run_dir = create_run_dir()
     print(f"[exp10] Outputs will be saved to: {run_dir}\n")
+    # Timestamp suffix for all figure filenames — prevents overwriting when re-running
+    # (e.g. with --use-weights) in the same folder or comparing runs side-by-side.
+    fig_stamp = time.strftime("_%Y_%m_%d__%H_%M_%S")
     save_experiment_description(cfg, run_dir, args.fast)
+    save_config_json(cfg, run_dir)   # machine-readable config for downstream experiments (e.g. exp8)
 
     # ------------------------------------------------------------------
     # Step 4: Load data
@@ -482,42 +630,62 @@ def main():
     data = load_data(cfg)
 
     # ------------------------------------------------------------------
-    # Step 5: Train Standard model
+    # Steps 5-7b: Train all models  OR  load saved weights
     # ------------------------------------------------------------------
-    print("=" * 60)
-    print("STEP 5: Training Standard model")
-    print("=" * 60)
-    std_encoder, std_head = train_single_model(
-        cfg, data, run_dir, model_type="standard", model_tag="standard"
-    )
+    input_dim = data.X_train.shape[1]
+    n_classes = int(len(set(data.y_train.numpy().tolist())))
 
-    # ------------------------------------------------------------------
-    # Step 6: Train L1-regularized model
-    # ------------------------------------------------------------------
-    print("=" * 60)
-    print(f"STEP 6: Training L1 model  (lambda={cfg.l1_lambda})")
-    print("=" * 60)
-    l1_encoder, l1_head = train_single_model(
-        cfg, data, run_dir, model_type="l1", model_tag="l1"
-    )
+    if weights_dir:
+        # ---- Load path: skip training, read weights from disk ----
+        print("=" * 60)
+        print("STEPS 5-7b: Loading saved model weights (skipping training)")
+        print("=" * 60)
+        (std_encoder, std_head,
+         l1_encoder,  l1_head,
+         mat_encoder, mat_head,
+         pl1_encoder, pl1_head) = load_weights_from_dir(
+            weights_dir, cfg, input_dim=input_dim, n_classes=n_classes,
+        )
+    else:
+        # ---- Train path: fit all four models from scratch ----
+        print("=" * 60)
+        print("STEP 5: Training Standard model")
+        print("=" * 60)
+        std_encoder, std_head = train_single_model(
+            cfg, data, run_dir, model_type="standard", model_tag="standard"
+        )
 
-    # ------------------------------------------------------------------
-    # Step 7: Train MRL model
-    # ------------------------------------------------------------------
-    print("=" * 60)
-    print("STEP 7: Training MRL model")
-    print("=" * 60)
-    mat_encoder, mat_head = train_single_model(
-        cfg, data, run_dir, model_type="matryoshka", model_tag="mat"
-    )
+        print("=" * 60)
+        print(f"STEP 6: Training L1 model  (lambda={cfg.l1_lambda})")
+        print("=" * 60)
+        l1_encoder, l1_head = train_single_model(
+            cfg, data, run_dir, model_type="l1", model_tag="l1"
+        )
+
+        print("=" * 60)
+        print("STEP 7: Training MRL model")
+        print("=" * 60)
+        mat_encoder, mat_head = train_single_model(
+            cfg, data, run_dir, model_type="matryoshka", model_tag="mat"
+        )
+
+        print("=" * 60)
+        print(f"STEP 7b: Training PrefixL1 model  (lambda={cfg.l1_lambda})")
+        print("=" * 60)
+        pl1_encoder, pl1_head = train_single_model(
+            cfg, data, run_dir, model_type="prefix_l1", model_tag="pl1"
+        )
 
     # ------------------------------------------------------------------
     # Step 8: Training curves (MANDATORY)
+    # plot_training_curves skips any tag whose .log file is absent,
+    # so calling it is safe even when loading weights (no logs written).
     # ------------------------------------------------------------------
     print("=" * 60)
     print("STEP 8: Plotting training curves")
     print("=" * 60)
-    plot_training_curves(run_dir, model_tags=["standard", "l1", "mat"])
+    plot_training_curves(run_dir, model_tags=["standard", "l1", "mat", "pl1"],
+                         fig_stamp=fig_stamp)
 
     # ------------------------------------------------------------------
     # Step 9: Extract embeddings as numpy arrays
@@ -536,6 +704,19 @@ def main():
     Z_train_mrl = get_embeddings_np(mat_encoder, data.X_train)
     Z_test_mrl  = get_embeddings_np(mat_encoder, data.X_test)
     print(f"[exp10] MRL:      train={Z_train_mrl.shape}, test={Z_test_mrl.shape}")
+
+    if pl1_encoder is not None:
+        Z_train_pl1 = get_embeddings_np(pl1_encoder, data.X_train)
+        Z_test_pl1  = get_embeddings_np(pl1_encoder, data.X_test)
+        print(f"[exp10] PrefixL1: train={Z_train_pl1.shape}, test={Z_test_pl1.shape}")
+        # Flip dim axis so the most informative dimension (last, lightest penalty)
+        # becomes dim 0. The prefix sweep then reads best-first, matching MRL's convention.
+        Z_train_pl1 = np.ascontiguousarray(Z_train_pl1[:, ::-1])
+        Z_test_pl1  = np.ascontiguousarray(Z_test_pl1[:,  ::-1])
+        print("[exp10] PrefixL1: dimensions reversed for prefix sweep (most informative first)")
+    else:
+        Z_train_pl1 = Z_test_pl1 = None
+        print("[exp10] PrefixL1: no encoder available — skipping")
 
     y_train_np = np.array(data.y_train.tolist(), dtype=np.int64)
     y_test_np  = np.array(data.y_test.tolist(),  dtype=np.int64)
@@ -567,6 +748,12 @@ def main():
         "MRL":      mat_lin,
         "PCA":      pca_lin,
     }
+    if Z_train_pl1 is not None:
+        pl1_lin = evaluate_prefix_linear(
+            Z_train_pl1, Z_test_pl1, y_train_np, y_test_np,
+            cfg.eval_prefixes, "pl1", seed=cfg.seed,
+        )
+        linear_results["PrefixL1"] = pl1_lin
 
     # ------------------------------------------------------------------
     # Step 11: 1-NN accuracy (dense prefix sweep)
@@ -595,6 +782,21 @@ def main():
         "MRL":      mat_1nn,
         "PCA":      pca_1nn,
     }
+    if Z_train_pl1 is not None:
+        # PrefixL1: use pre-flipped embeddings directly (evaluate_prefix_1nn would
+        # re-extract from the encoder and slice first-k, undoing the flip).
+        print(f"\n[exp10] 1-NN sweep for 'pl1 (rev)' ...")
+        pl1_1nn = {}
+        for k in cfg.eval_prefixes:
+            k_eff = min(k, Z_train_pl1.shape[1])
+            acc = evaluate_1nn(
+                Z_train_pl1[:, :k_eff], Z_test_pl1[:, :k_eff],
+                y_train_np, y_test_np,
+                max_db_samples=max_1nn_db, seed=cfg.seed,
+            )
+            pl1_1nn[k] = acc
+            print(f"  k={k:>3}  1-NN={acc:.4f}")
+        nn1_results["PrefixL1"] = pl1_1nn
 
     # ------------------------------------------------------------------
     # Step 12: Plots + results table
@@ -603,15 +805,17 @@ def main():
     print("STEP 12: Saving plots and results")
     print("=" * 60)
 
-    plot_all_curves(linear_results, nn1_results, cfg.eval_prefixes, run_dir, cfg.l1_lambda)
+    plot_all_curves(linear_results, nn1_results, cfg.eval_prefixes, run_dir,
+                    cfg.l1_lambda, fig_stamp=fig_stamp)
     save_results_summary(linear_results, nn1_results, cfg.eval_prefixes, run_dir)
 
     # Compact stdout table (sample every 4 dims to keep output readable)
-    sample_ks = [k for k in cfg.eval_prefixes if k % 4 == 0 or k == 1]
+    sample_ks   = [k for k in cfg.eval_prefixes if k % 4 == 0 or k == 1]
+    model_names = list(linear_results.keys())   # only models that were actually evaluated
     print(f"\n{'k':>4}  {'Model':<12}  {'Linear':>8}  {'1-NN':>8}")
     print("-" * 40)
     for k in sample_ks:
-        for model_name in ["Standard", "L1", "MRL", "PCA"]:
+        for model_name in model_names:
             lin = linear_results[model_name].get(k, float("nan"))
             nn1 = nn1_results[model_name].get(k,    float("nan"))
             print(f"{k:>4}  {model_name:<12}  {lin:>8.4f}  {nn1:>8.4f}")
