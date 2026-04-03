@@ -17,15 +17,20 @@ MatryoshkaLoss
     This forces the encoder to pack the most discriminative information
     into the earliest dimensions.
 
-PrefixL1Loss
-    Plain cross-entropy loss + Matryoshka-style weighted L1 penalty.
+PrefixLpLoss
+    Plain cross-entropy loss + Matryoshka-style weighted L_p penalty.
 
-    Same structure as L1RegLoss but regularization is front-loaded:
-        penalty = sum_{m=1}^{k} ||z_{1:m}||_1
-                = sum_{j=0}^{k-1} (k - j) * |z_j|
+    Generalises PrefixL1Loss to any integer p >= 1:
+        penalty = sum_{j=0}^{d-1} w_j * |z_j|^p
+    where w_j = (d - j) (dim 0 most penalised, dim d-1 least).
 
-    Early dimensions face the highest sparsity pressure, creating ordering
-    pressure without any multi-scale loss term.
+    p=1 → sparsity (hard zeros possible).
+    p=3,4 → soft ordering; large activations in high-penalty dims are
+            pushed away without driving small ones exactly to zero.
+
+    build_loss() accepts model_type="prefix_l{p}" (e.g. "prefix_l1",
+    "prefix_l3", "prefix_l4") and constructs PrefixLpLoss with the
+    matching p.
 
 All classes share the same interface:
     loss = criterion(embedding, labels, head)
@@ -40,7 +45,7 @@ Outputs:
     torch.Tensor: scalar loss value
 
 Usage:
-    from losses.mat_loss import StandardLoss, MatryoshkaLoss, PrefixL1Loss, build_loss
+    from losses.mat_loss import StandardLoss, MatryoshkaLoss, PrefixLpLoss, build_loss
     criterion = build_loss('mat', prefixes=[1, 2, 4, 8], head_mode='shared_head')
     python losses/mat_loss.py   # smoke test (forward pass for all loss types)
 """
@@ -223,52 +228,54 @@ class L1RegLoss(nn.Module):
 
 
 # ==============================================================================
-# Prefix L1 loss — plain CE + Matryoshka-style weighted L1 penalty
+# Prefix Lp loss — plain CE + Matryoshka-style weighted L_p penalty
 # ==============================================================================
 
-class PrefixL1Loss(nn.Module):
+class PrefixLpLoss(nn.Module):
     """
-    Cross-entropy loss with a Matryoshka-style weighted L1 penalty.
+    Cross-entropy loss with a Matryoshka-style weighted L_p penalty.
 
-    Same structure as L1RegLoss, but the regularization penalizes early
-    dimensions more heavily by summing the L1 norm over every prefix:
+    Generalises the L1 case to any integer p >= 1.  The regularization
+    penalises early dimensions more heavily:
 
-        penalty = sum_{m=1}^{k} ||z_{1:m}||_1
+        penalty = sum_{j=0}^{d-1} w_j * |z_j|^p
+        w_j     = (d - j)   (dim 0 most penalised, dim d-1 least)
 
-    Expanding the double sum, dimension j (0-indexed) appears in all prefix
-    sums for m >= j+1, so it is equivalent to a weighted L1:
+    p=1 : L1 — constant gradient, hard zeros possible (sparsity)
+    p=3 : gradient ∝ |z|² — large activations pushed strongly, small ones
+          nearly free; soft ordering without exact zeros
+    p=4 : gradient ∝ |z|³ — even stronger push for large activations
 
-        penalty = sum_{j=0}^{k-1} (k - j) * |z_j|
-
-    The weight vector [k, k-1, ..., 1] is pre-computed once and registered
-    as a buffer (moves to GPU automatically with .to(device)).
+    The weight vector is pre-computed and registered as a buffer so it
+    moves to GPU automatically with .to(device).
 
     Compare to L1RegLoss:
-        L1RegLoss  : CE + lambda * mean(|z|)          — uniform penalty
-        PrefixL1Loss: CE + lambda * weighted_L1(z)    — front-loaded penalty
+        L1RegLoss   : CE + lambda * mean(|z|)       — uniform, unordered
+        PrefixLpLoss: CE + lambda * Σ w_j |z_j|^p  — front-loaded, ordered
 
-    The ordering pressure comes entirely from the regularizer, not from
-    any multi-scale loss term.
-
-    Full loss = CE(head(z), y) + lambda_l1 * (weights · |z|).mean(dim=0).sum()
+    Full loss = CE(head(z), y) + lambda_l1 * (w · |z|^p).mean(dim=0).sum()
 
     Args:
-        embed_dim (int)  : Total embedding dimension k.
-        lambda_l1 (float): Weight of the prefix L1 penalty. Default 0.05.
+        embed_dim (int)  : Total embedding dimension d.
+        lambda_l1 (float): Overall regularization strength. Default 0.05.
+        p         (int)  : Lp exponent. Default 1 (L1). Must be >= 1.
     """
 
-    def __init__(self, embed_dim: int, lambda_l1: float = 0.05):
+    def __init__(self, embed_dim: int, lambda_l1: float = 0.05, p: int = 1):
         super().__init__()
+
+        assert p >= 1, f"p must be >= 1, got {p}"
 
         self.ce        = nn.CrossEntropyLoss()
         self.lambda_l1 = lambda_l1
+        self.p         = p
 
-        # Build weight vector: w[j] = (embed_dim - j) for j in 0..embed_dim-1
-        # Shape: (embed_dim,). Registered as buffer so it follows .to(device).
-        w = torch.arange(embed_dim, 0, -1, dtype=torch.float32)  # [k, k-1, ..., 1]
+        # w[j] = (embed_dim - j): dim 0 gets weight d, dim d-1 gets weight 1.
+        # Registered as buffer so it moves to the right device automatically.
+        w = torch.arange(embed_dim, 0, -1, dtype=torch.float32)
         self.register_buffer("dim_weights", w)
 
-        print(f"[PrefixL1Loss] embed_dim={embed_dim}, lambda_l1={lambda_l1}")
+        print(f"[PrefixLpLoss] p={p}, embed_dim={embed_dim}, lambda_l1={lambda_l1}")
         print(f"  dim_weights (first 8): {w[:8].tolist()}")
 
     def forward(
@@ -278,7 +285,7 @@ class PrefixL1Loss(nn.Module):
         head: nn.Module,
     ) -> torch.Tensor:
         """
-        Compute CE loss on full embedding + weighted prefix L1 penalty.
+        Compute CE loss on full embedding + weighted prefix Lp penalty.
 
         Args:
             embedding (torch.Tensor): Shape (batch_size, embed_dim).
@@ -286,16 +293,18 @@ class PrefixL1Loss(nn.Module):
             head      (nn.Module)   : SharedClassifier — called with full embedding.
 
         Returns:
-            torch.Tensor: Scalar loss = CE + lambda_l1 * weighted_l1.
+            torch.Tensor: Scalar loss = CE + lambda_l1 * weighted_lp.
         """
-        # Plain cross-entropy on the full embedding (same as StandardLoss / L1RegLoss)
         ce_loss = self.ce(head(embedding), labels)
 
-        # Weighted L1: average over batch, then weighted sum over dimensions.
-        # Shape: (batch, embed_dim) -> scalar
-        weighted_l1 = (self.dim_weights * embedding.abs()).mean(dim=0).sum()
+        # Weighted Lp: w_j * |z_j|^p, averaged over batch, summed over dims.
+        weighted_lp = (self.dim_weights * embedding.abs().pow(self.p)).mean(dim=0).sum()
 
-        return ce_loss + self.lambda_l1 * weighted_l1
+        return ce_loss + self.lambda_l1 * weighted_lp
+
+
+# Backward-compatible alias so existing code that imports PrefixL1Loss still works.
+PrefixL1Loss = PrefixLpLoss
 
 
 # ==============================================================================
@@ -306,16 +315,24 @@ def build_loss(cfg, model_type: str) -> nn.Module:
     """
     Build and return the appropriate loss function based on config and model type.
 
+    For PrefixLp losses, model_type follows the pattern "prefix_l{p}" where p
+    is a positive integer (e.g. "prefix_l1", "prefix_l3", "prefix_l4").
+    All such types map to PrefixLpLoss with the corresponding exponent.
+
     Args:
-        cfg        (ExpConfig): Experiment config. Uses head_mode, eval_prefixes.
-        model_type (str)      : 'standard' or 'matryoshka'.
+        cfg        (ExpConfig): Experiment config. Uses head_mode, eval_prefixes,
+                                embed_dim, l1_lambda.
+        model_type (str)      : One of 'standard', 'matryoshka', 'l1',
+                                or 'prefix_l{p}' for any integer p >= 1.
 
     Returns:
-        nn.Module: StandardLoss or MatryoshkaLoss instance.
+        nn.Module: The constructed loss instance.
 
     Raises:
         ValueError: If model_type is not recognised.
     """
+    import re
+
     if model_type == "standard":
         print("[loss] Building StandardLoss")
         return StandardLoss()
@@ -332,20 +349,20 @@ def build_loss(cfg, model_type: str) -> nn.Module:
         print(f"[loss] Building L1RegLoss  (lambda_l1={cfg.l1_lambda})")
         return L1RegLoss(lambda_l1=cfg.l1_lambda)
 
-    elif model_type == "prefix_l1":
+    elif re.fullmatch(r"prefix_l(\d+)", model_type):
+        # Matches "prefix_l1", "prefix_l3", "prefix_l4", etc.
+        p = int(re.fullmatch(r"prefix_l(\d+)", model_type).group(1))
         print(
-            f"[loss] Building PrefixL1Loss  "
-            f"(embed_dim={cfg.embed_dim}, lambda_l1={cfg.l1_lambda})"
+            f"[loss] Building PrefixLpLoss  "
+            f"(p={p}, embed_dim={cfg.embed_dim}, lambda_l1={cfg.l1_lambda})"
         )
-        return PrefixL1Loss(
-            embed_dim=cfg.embed_dim,
-            lambda_l1=cfg.l1_lambda,
-        )
+        return PrefixLpLoss(embed_dim=cfg.embed_dim, lambda_l1=cfg.l1_lambda, p=p)
 
     else:
         raise ValueError(
             f"Unknown model_type '{model_type}'. "
-            f"Choose 'standard', 'matryoshka', 'l1', or 'prefix_l1'."
+            f"Choose 'standard', 'matryoshka', 'l1', or 'prefix_l{{p}}' "
+            f"(e.g. 'prefix_l1', 'prefix_l3', 'prefix_l4')."
         )
 
 
@@ -408,35 +425,29 @@ if __name__ == "__main__":
     print("  PASSED")
 
     # ------------------------------------------------------------------
-    print("\n--- PrefixL1Loss (plain CE + prefix-weighted L1) ---")
-    prefix_l1_loss = build_loss(cfg, "prefix_l1")
-    # Fresh embedding with grad so we can check backward
-    dummy_emb_pl = torch.randn(batch, cfg.embed_dim, requires_grad=True)
-    loss_pl = prefix_l1_loss(dummy_emb_pl, dummy_labels, head_a)
-    print(f"  Loss value: {loss_pl.item():.4f}")
-    assert loss_pl.item() > 0, "PrefixL1Loss should be positive"
-    assert loss_pl.shape == torch.Size([]), "Should be scalar"
+    print("\n--- PrefixLpLoss — testing p=1, p=3, p=4 ---")
+    for p_test in [1, 3, 4]:
+        loss_fn = build_loss(cfg, f"prefix_l{p_test}")
+        dummy_emb_pl = torch.randn(batch, cfg.embed_dim, requires_grad=True)
+        loss_val_pl  = loss_fn(dummy_emb_pl, dummy_labels, head_a)
+        print(f"  p={p_test}  loss={loss_val_pl.item():.4f}")
+        assert loss_val_pl.item() > 0, f"PrefixLpLoss(p={p_test}) should be positive"
+        assert loss_val_pl.shape == torch.Size([]), "Should be scalar"
 
-    # Verify weight vector has correct shape and ordering
-    w = prefix_l1_loss.dim_weights
-    assert w.shape == (cfg.embed_dim,), f"Weight shape mismatch: {w.shape}"
-    assert w[0].item() == cfg.embed_dim, f"First weight should be embed_dim={cfg.embed_dim}"
-    assert w[-1].item() == 1.0, "Last weight should be 1.0"
-    assert (w[:-1] > w[1:]).all(), "Weights should be strictly decreasing"
-    print(f"  Weight vector (all {cfg.embed_dim} dims): {w.tolist()}")
-    print("  Weight ordering: PASSED")
+        # Weight vector checks (same for all p)
+        w = loss_fn.dim_weights
+        assert w.shape == (cfg.embed_dim,), f"Weight shape mismatch: {w.shape}"
+        assert w[0].item() == cfg.embed_dim, "First weight should be embed_dim"
+        assert w[-1].item() == 1.0, "Last weight should be 1.0"
+        assert (w[:-1] > w[1:]).all(), "Weights should be strictly decreasing"
 
-    # Backward pass
-    loss_pl.backward()
-    assert dummy_emb_pl.grad is not None, "No gradient on embedding"
-    print(f"  Gradient norm on embedding: {dummy_emb_pl.grad.norm().item():.4f}")
-    print("  Backward: PASSED")
+        # Backward pass
+        loss_val_pl.backward()
+        assert dummy_emb_pl.grad is not None, "No gradient on embedding"
+        print(f"       grad norm={dummy_emb_pl.grad.norm().item():.4f}  PASSED")
 
-    # Sanity: prefix_l1 loss > mrl loss alone (L1 penalty adds to it)
-    mrl_only_loss = build_loss(cfg, "matryoshka")
-    loss_mrl_only = mrl_only_loss(dummy_emb, dummy_labels, head_a)
-    # Note: different embeddings, so just check both positive
-    print(f"  PrefixL1 loss ({loss_pl.item():.3f}) includes L1 penalty on top of MRL CE")
-    print("  PASSED")
+    # Verify backward-compat alias
+    assert PrefixL1Loss is PrefixLpLoss, "PrefixL1Loss alias broken"
+    print("  PrefixL1Loss alias: PASSED")
 
     print("\nAll loss checks passed.")

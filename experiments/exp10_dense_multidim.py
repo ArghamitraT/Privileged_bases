@@ -119,8 +119,12 @@ BATCH_SIZE    = 128
 WEIGHT_DECAY  = 1e-4
 SEED          = 42
 L1_LAMBDA     = 0.05
+# LP_ORDERS: list of Lp exponents to train PrefixLp models for.
+# Each value p trains one model with model_type="prefix_l{p}", saved as pl{p}_*.pt.
+# Set to [] to skip all PrefixLp models.  Examples: [1], [1, 3, 4], [1, 3, 4, 6].
+LP_ORDERS     = [5, 6]
 MAX_1NN_DB    = 10_000   # cap on 1-NN training-set size for speed on dense sweep
-USE_WEIGHTS   = "exprmnt_2026_04_01__22_04_54"       # folder name (e.g. "exprmnt_2026_04_01__22_04_54") or full path;
+USE_WEIGHTS   = ""       # folder name (e.g. "exprmnt_2026_04_01__22_04_54") or full path;
                          # if set, skip training and load weights to regenerate plots
 # ==============================================================================
 
@@ -151,11 +155,11 @@ def set_seeds(seed: int):
 
 def load_weights_from_dir(weights_dir: str, cfg, input_dim: int, n_classes: int):
     """
-    Load encoder and head weights saved by train_single_model for all four models.
+    Load encoder and head weights saved by train_single_model.
 
-    File naming convention matches train_single_model's model_tag:
-        {model_tag}_encoder_best.pt  /  {model_tag}_head_best.pt
-    PrefixL1 (tag "pl1") is optional — returns None pair if files are absent.
+    Always loads Standard, L1, and MRL weights (required).
+    Scans the directory for any pl{N}_encoder_best.pt files and loads all
+    that are present — supporting arbitrary LP_ORDERS without hardcoding p.
 
     Args:
         weights_dir (str)      : Directory containing the saved .pt files.
@@ -164,25 +168,23 @@ def load_weights_from_dir(weights_dir: str, cfg, input_dim: int, n_classes: int)
         n_classes   (int)      : Number of output classes (from data).
 
     Returns:
-        tuple: (std_enc, std_hd, l1_enc, l1_hd, mat_enc, mat_hd, pl1_enc, pl1_hd)
-               pl1_enc and pl1_hd are None if pl1_encoder_best.pt is absent.
+        tuple: (std_enc, std_hd, l1_enc, l1_hd, mat_enc, mat_hd, pl_models)
+               pl_models is a dict {p (int): (encoder, head)} for all found
+               PrefixLp weight files.  Empty dict if none are present.
     """
+    import re as _re
     device = torch.device("cpu")
 
     def _load_pair(enc_tag, hd_tag):
         enc = MLPEncoder(
-            input_dim=input_dim,
-            hidden_dim=cfg.hidden_dim,
-            embed_dim=cfg.embed_dim,
+            input_dim=input_dim, hidden_dim=cfg.hidden_dim, embed_dim=cfg.embed_dim,
         )
-        enc_path = os.path.join(weights_dir, enc_tag)
-        enc.load_state_dict(torch.load(enc_path, map_location=device))
+        enc.load_state_dict(torch.load(os.path.join(weights_dir, enc_tag), map_location=device))
         enc.eval()
         print(f"  [load] Encoder loaded from {enc_tag}")
 
         hd = build_head(cfg, n_classes=n_classes)
-        hd_path = os.path.join(weights_dir, hd_tag)
-        hd.load_state_dict(torch.load(hd_path, map_location=device))
+        hd.load_state_dict(torch.load(os.path.join(weights_dir, hd_tag), map_location=device))
         hd.eval()
         print(f"  [load] Head    loaded from {hd_tag}")
         return enc, hd
@@ -191,16 +193,22 @@ def load_weights_from_dir(weights_dir: str, cfg, input_dim: int, n_classes: int)
 
     std_enc, std_hd = _load_pair("standard_encoder_best.pt", "standard_head_best.pt")
     l1_enc,  l1_hd  = _load_pair("l1_encoder_best.pt",       "l1_head_best.pt")
-    mat_enc, mat_hd = _load_pair("mat_encoder_best.pt",      "mat_head_best.pt")
+    mat_enc, mat_hd = _load_pair("mat_encoder_best.pt",       "mat_head_best.pt")
 
-    pl1_enc_path = os.path.join(weights_dir, "pl1_encoder_best.pt")
-    if os.path.isfile(pl1_enc_path):
-        pl1_enc, pl1_hd = _load_pair("pl1_encoder_best.pt", "pl1_head_best.pt")
+    # Scan for pl{N}_encoder_best.pt files (any p value)
+    pl_models = {}
+    for fname in sorted(os.listdir(weights_dir)):
+        m = _re.fullmatch(r"pl(\d+)_encoder_best\.pt", fname)
+        if m:
+            p = int(m.group(1))
+            enc, hd = _load_pair(f"pl{p}_encoder_best.pt", f"pl{p}_head_best.pt")
+            pl_models[p] = (enc, hd)
+    if pl_models:
+        print(f"  [load] PrefixLp models found: p = {sorted(pl_models)}")
     else:
-        pl1_enc, pl1_hd = None, None
-        print("  [load] pl1_encoder_best.pt not found — PrefixL1 will be skipped")
+        print("  [load] No PrefixLp weight files found — PrefixLp will be skipped")
 
-    return std_enc, std_hd, l1_enc, l1_hd, mat_enc, mat_hd, pl1_enc, pl1_hd
+    return std_enc, std_hd, l1_enc, l1_hd, mat_enc, mat_hd, pl_models
 
 
 # ==============================================================================
@@ -357,13 +365,51 @@ def evaluate_pca_linear(data, cfg, seed=42):
 # ==============================================================================
 
 # Consistent colour/marker/label per model (no FF in exp10)
-MODEL_STYLES = {
+_BASE_MODEL_STYLES = {
     "Standard": ("steelblue",  "o-",  "Standard"),
     "L1":       ("orchid",     "D-",  "L1"),
     "MRL":      ("darkorange", "s-",  "MRL"),
-    "PrefixL1": ("crimson",    "^-",  "PrefixL1 (rev)"),
     "PCA":      ("seagreen",   "x--", "PCA"),
 }
+
+# Fixed colours for each Lp exponent — add more if needed
+_PL_COLORS  = {1: "crimson", 2: "hotpink", 3: "darkorchid", 4: "indigo",
+               5: "navy",    6: "teal"}
+_PL_MARKERS = {1: "^-", 2: "v-", 3: "P-", 4: "X-", 5: "h-", 6: "D-"}
+
+
+def get_model_style(model_name: str, l1_lambda: float = None):
+    """
+    Return (color, marker_style, legend_label) for a model name.
+
+    Handles fixed base models and dynamic "PrefixL{p} (rev)" names.
+
+    Args:
+        model_name (str)  : Model key used in results dicts.
+        l1_lambda  (float): Used to annotate the L1 line label (optional).
+
+    Returns:
+        Tuple[str, str, str]: (color, style, label)
+    """
+    import re
+    if model_name in _BASE_MODEL_STYLES:
+        color, style, label = _BASE_MODEL_STYLES[model_name]
+        if model_name == "L1" and l1_lambda is not None:
+            label = f"L1 (lambda={l1_lambda})"
+        return color, style, label
+    # PrefixLp (rev) — e.g. "PrefixL3 (rev)"
+    m = re.fullmatch(r"PrefixL(\d+) \(rev\)", model_name)
+    if m:
+        p     = int(m.group(1))
+        color = _PL_COLORS.get(p, "darkred")
+        style = _PL_MARKERS.get(p, "^-")
+        return color, style, model_name
+    # Fallback for unrecognised names
+    return "gray", "x-", model_name
+
+
+# Keep backward-compat name in case any inline code still references MODEL_STYLES
+MODEL_STYLES = _BASE_MODEL_STYLES
 
 
 def _single_accuracy_plot(results_dict, eval_prefixes, ylabel, title,
@@ -388,9 +434,7 @@ def _single_accuracy_plot(results_dict, eval_prefixes, ylabel, title,
     fig, ax = plt.subplots(figsize=(10, 5))
 
     for model_name, acc_dict in results_dict.items():
-        color, style, label = MODEL_STYLES.get(model_name, ("gray", "x-", model_name))
-        if model_name == "L1":
-            label = f"L1 (lambda={l1_lambda})"
+        color, style, label = get_model_style(model_name, l1_lambda=l1_lambda)
         accs = [acc_dict.get(k, float("nan")) for k in eval_prefixes]
         ax.plot(eval_prefixes, accs, style, color=color,
                 label=label, linewidth=2, markersize=4)
@@ -444,9 +488,7 @@ def plot_all_curves(linear_results, nn1_results, eval_prefixes, run_dir,
     fig, (ax_top, ax_bot) = plt.subplots(2, 1, figsize=(10, 9), sharex=True)
 
     for model_name in linear_results:
-        color, style, label = MODEL_STYLES.get(model_name, ("gray", "x-", model_name))
-        if model_name == "L1":
-            label = f"L1 (lambda={l1_lambda})"
+        color, style, label = get_model_style(model_name, l1_lambda=l1_lambda)
         lin_accs = [linear_results[model_name].get(k, float("nan")) for k in eval_prefixes]
         nn1_accs = [nn1_results[model_name].get(k,    float("nan")) for k in eval_prefixes]
         ax_top.plot(eval_prefixes, lin_accs, style, color=color,
@@ -612,9 +654,19 @@ def main():
 
     # ------------------------------------------------------------------
     # Step 3: Setup output directory + save description
+    # When --use-weights is set, write all outputs (plots, logs, summaries)
+    # into the same folder as the loaded weights so results stay together.
     # ------------------------------------------------------------------
-    run_dir = create_run_dir()
-    print(f"[exp10] Outputs will be saved to: {run_dir}\n")
+    if weights_dir:
+        # Create a new timestamped subfolder *inside* the weights folder so that
+        # repeated --use-weights runs don't collide (e.g. code_snapshot already exists).
+        sub_stamp = time.strftime("exprmnt_%Y_%m_%d__%H_%M_%S")
+        run_dir   = os.path.join(weights_dir, sub_stamp)
+        os.makedirs(run_dir, exist_ok=True)
+        print(f"[exp10] --use-weights: outputs will be saved to: {run_dir}\n")
+    else:
+        run_dir = create_run_dir()
+        print(f"[exp10] Outputs will be saved to: {run_dir}\n")
     # Timestamp suffix for all figure filenames — prevents overwriting when re-running
     # (e.g. with --use-weights) in the same folder or comparing runs side-by-side.
     fig_stamp = time.strftime("_%Y_%m_%d__%H_%M_%S")
@@ -643,11 +695,11 @@ def main():
         (std_encoder, std_head,
          l1_encoder,  l1_head,
          mat_encoder, mat_head,
-         pl1_encoder, pl1_head) = load_weights_from_dir(
+         pl_models) = load_weights_from_dir(
             weights_dir, cfg, input_dim=input_dim, n_classes=n_classes,
         )
     else:
-        # ---- Train path: fit all four models from scratch ----
+        # ---- Train path: fit base models + one PrefixLp per p in LP_ORDERS ----
         print("=" * 60)
         print("STEP 5: Training Standard model")
         print("=" * 60)
@@ -669,12 +721,17 @@ def main():
             cfg, data, run_dir, model_type="matryoshka", model_tag="mat"
         )
 
-        print("=" * 60)
-        print(f"STEP 7b: Training PrefixL1 model  (lambda={cfg.l1_lambda})")
-        print("=" * 60)
-        pl1_encoder, pl1_head = train_single_model(
-            cfg, data, run_dir, model_type="prefix_l1", model_tag="pl1"
-        )
+        # Train one PrefixLp model per p in LP_ORDERS
+        pl_models = {}   # {p: (encoder, head)}
+        for p in LP_ORDERS:
+            print("=" * 60)
+            print(f"STEP 7+: Training PrefixL{p} model  (lambda={cfg.l1_lambda})")
+            print("=" * 60)
+            enc, hd = train_single_model(
+                cfg, data, run_dir,
+                model_type=f"prefix_l{p}", model_tag=f"pl{p}",
+            )
+            pl_models[p] = (enc, hd)
 
     # ------------------------------------------------------------------
     # Step 8: Training curves (MANDATORY)
@@ -684,7 +741,8 @@ def main():
     print("=" * 60)
     print("STEP 8: Plotting training curves")
     print("=" * 60)
-    plot_training_curves(run_dir, model_tags=["standard", "l1", "mat", "pl1"],
+    pl_tags = [f"pl{p}" for p in sorted(pl_models)]
+    plot_training_curves(run_dir, model_tags=["standard", "l1", "mat"] + pl_tags,
                          fig_stamp=fig_stamp)
 
     # ------------------------------------------------------------------
@@ -705,18 +763,17 @@ def main():
     Z_test_mrl  = get_embeddings_np(mat_encoder, data.X_test)
     print(f"[exp10] MRL:      train={Z_train_mrl.shape}, test={Z_test_mrl.shape}")
 
-    if pl1_encoder is not None:
-        Z_train_pl1 = get_embeddings_np(pl1_encoder, data.X_train)
-        Z_test_pl1  = get_embeddings_np(pl1_encoder, data.X_test)
-        print(f"[exp10] PrefixL1: train={Z_train_pl1.shape}, test={Z_test_pl1.shape}")
-        # Flip dim axis so the most informative dimension (last, lightest penalty)
-        # becomes dim 0. The prefix sweep then reads best-first, matching MRL's convention.
-        Z_train_pl1 = np.ascontiguousarray(Z_train_pl1[:, ::-1])
-        Z_test_pl1  = np.ascontiguousarray(Z_test_pl1[:,  ::-1])
-        print("[exp10] PrefixL1: dimensions reversed for prefix sweep (most informative first)")
-    else:
-        Z_train_pl1 = Z_test_pl1 = None
-        print("[exp10] PrefixL1: no encoder available — skipping")
+    # For each PrefixLp model: extract embeddings then flip dimensions.
+    # Flip puts the most informative dim (last, lightest penalty) at position 0
+    # so the prefix sweep reads best-first, matching MRL's convention.
+    pl_embeddings = {}   # {p: (Z_train_flipped, Z_test_flipped)}
+    for p, (enc, _hd) in sorted(pl_models.items()):
+        Ztr = get_embeddings_np(enc, data.X_train)
+        Zte = get_embeddings_np(enc, data.X_test)
+        Ztr = np.ascontiguousarray(Ztr[:, ::-1])
+        Zte = np.ascontiguousarray(Zte[:,  ::-1])
+        pl_embeddings[p] = (Ztr, Zte)
+        print(f"[exp10] PrefixL{p}: train={Ztr.shape}, reversed (most informative first)")
 
     y_train_np = np.array(data.y_train.tolist(), dtype=np.int64)
     y_test_np  = np.array(data.y_test.tolist(),  dtype=np.int64)
@@ -746,14 +803,13 @@ def main():
         "Standard": std_lin,
         "L1":       l1_lin,
         "MRL":      mat_lin,
-        "PCA":      pca_lin,
     }
-    if Z_train_pl1 is not None:
-        pl1_lin = evaluate_prefix_linear(
-            Z_train_pl1, Z_test_pl1, y_train_np, y_test_np,
-            cfg.eval_prefixes, "pl1", seed=cfg.seed,
+    for p, (Ztr, Zte) in sorted(pl_embeddings.items()):
+        linear_results[f"PrefixL{p} (rev)"] = evaluate_prefix_linear(
+            Ztr, Zte, y_train_np, y_test_np,
+            cfg.eval_prefixes, f"pl{p}", seed=cfg.seed,
         )
-        linear_results["PrefixL1"] = pl1_lin
+    linear_results["PCA"] = pca_lin   # PCA always last
 
     # ------------------------------------------------------------------
     # Step 11: 1-NN accuracy (dense prefix sweep)
@@ -780,23 +836,23 @@ def main():
         "Standard": std_1nn,
         "L1":       l1_1nn,
         "MRL":      mat_1nn,
-        "PCA":      pca_1nn,
     }
-    if Z_train_pl1 is not None:
-        # PrefixL1: use pre-flipped embeddings directly (evaluate_prefix_1nn would
-        # re-extract from the encoder and slice first-k, undoing the flip).
-        print(f"\n[exp10] 1-NN sweep for 'pl1 (rev)' ...")
-        pl1_1nn = {}
+    # PrefixLp 1-NN: use pre-flipped embeddings directly to preserve the flip.
+    for p, (Ztr, Zte) in sorted(pl_embeddings.items()):
+        label = f"PrefixL{p} (rev)"
+        print(f"\n[exp10] 1-NN sweep for '{label}' ...")
+        pl_1nn = {}
         for k in cfg.eval_prefixes:
-            k_eff = min(k, Z_train_pl1.shape[1])
+            k_eff = min(k, Ztr.shape[1])
             acc = evaluate_1nn(
-                Z_train_pl1[:, :k_eff], Z_test_pl1[:, :k_eff],
+                Ztr[:, :k_eff], Zte[:, :k_eff],
                 y_train_np, y_test_np,
                 max_db_samples=max_1nn_db, seed=cfg.seed,
             )
-            pl1_1nn[k] = acc
+            pl_1nn[k] = acc
             print(f"  k={k:>3}  1-NN={acc:.4f}")
-        nn1_results["PrefixL1"] = pl1_1nn
+        nn1_results[label] = pl_1nn
+    nn1_results["PCA"] = pca_1nn   # PCA always last
 
     # ------------------------------------------------------------------
     # Step 12: Plots + results table

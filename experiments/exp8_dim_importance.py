@@ -97,7 +97,7 @@ L1_LAMBDA         = 0.05
 MAX_PROBE_SAMPLES = 2000   # max samples used for logistic-regression importance probes
 # Path to an exp7 or exp10 output folder to load weights from (skips training).
 # Leave as "" to train from scratch. CLI --use-weights overrides this.
-USE_WEIGHTS       = "exprmnt_2026_04_01__22_04_54"
+USE_WEIGHTS       = "exprmnt_2026_04_02__12_35_14"
 # ==============================================================================
 
 
@@ -105,15 +105,28 @@ USE_WEIGHTS       = "exprmnt_2026_04_01__22_04_54"
 # Module-level constants
 # ==============================================================================
 
-MODEL_NAMES = ["Standard", "L1", "MRL", "PrefixL1", "PCA"]
+# Base model names (always present).  PrefixLp models are added dynamically
+# in main() once we know which p values are available in the weights / training run.
+BASE_MODEL_NAMES = ["Standard", "L1", "MRL", "PCA"]
 
 MODEL_COLORS = {
     "Standard": "steelblue",
     "L1":       "orchid",
     "MRL":      "darkorange",
-    "PrefixL1": "crimson",
     "PCA":      "seagreen",
+    # PrefixLp colours — keyed by p
+    1: "crimson",
+    2: "hotpink",
+    3: "darkorchid",
+    4: "indigo",
+    5: "navy",
+    6: "teal",
 }
+
+
+def get_pl_color(p: int) -> str:
+    """Return a colour for PrefixL{p} (rev), falling back to darkred."""
+    return MODEL_COLORS.get(p, "darkred")
 
 IMPORTANCE_METHODS = ["mean_abs", "variance", "probe_acc"]
 
@@ -491,17 +504,17 @@ def detect_arch_from_weights(weights_dir):
 
 def load_models_from_dir(weights_dir, cfg, data):
     """
-    Load Standard, L1, MRL, and (optionally) PrefixL1 encoder+head weights
+    Load Standard, L1, MRL, and all available PrefixLp encoder+head weights
     from a saved run folder.
 
-    Accepts output directories from exp7 or exp10. Weight filenames:
+    Accepts output directories from exp7 or exp10.  Required weight files:
         standard_encoder_best.pt / standard_head_best.pt
         l1_encoder_best.pt       / l1_head_best.pt
         mat_encoder_best.pt      / mat_head_best.pt
-        pl1_encoder_best.pt      / pl1_head_best.pt  (exp10 runs only)
 
-    PrefixL1 is optional — if not found (e.g. older exp7 runs), None is
-    returned for those and PrefixL1 is omitted from downstream analysis.
+    PrefixLp weights (pl{p}_encoder_best.pt / pl{p}_head_best.pt) are
+    optional.  The directory is scanned for any pl{N}_encoder_best.pt
+    files — all found p values are loaded.
 
     Args:
         weights_dir (str)       : Path to exp7 or exp10 output folder.
@@ -510,13 +523,15 @@ def load_models_from_dir(weights_dir, cfg, data):
 
     Returns:
         Tuple: (std_encoder, std_head, l1_encoder, l1_head,
-                mat_encoder, mat_head, pl1_encoder, pl1_head)
-               pl1_encoder and pl1_head are None when weights not found.
-               All others are in eval mode.
+                mat_encoder, mat_head, pl_models)
+               pl_models is a dict {p (int): (encoder, head)} for all found
+               PrefixLp weight files.  Empty dict if none are present.
 
     Raises:
         FileNotFoundError: If Standard, L1, or MRL weight files are missing.
     """
+    import re as _re
+
     required = [
         "standard_encoder_best.pt", "standard_head_best.pt",
         "l1_encoder_best.pt",       "l1_head_best.pt",
@@ -544,17 +559,20 @@ def load_models_from_dir(weights_dir, cfg, data):
     l1_enc,  l1_hd  = _load("l1_encoder_best.pt",       "l1_head_best.pt")
     mat_enc, mat_hd = _load("mat_encoder_best.pt",       "mat_head_best.pt")
 
-    # PrefixL1 weights are optional (present in exp10 runs, absent in exp7 runs)
-    pl1_enc_path = os.path.join(weights_dir, "pl1_encoder_best.pt")
-    if os.path.isfile(pl1_enc_path):
-        pl1_enc, pl1_hd = _load("pl1_encoder_best.pt", "pl1_head_best.pt")
-        print("[exp8] PrefixL1 weights found and loaded.")
-    else:
-        pl1_enc, pl1_hd = None, None
-        print("[exp8] PrefixL1 weights not found in this folder — skipping PrefixL1.")
+    # Scan for pl{N}_encoder_best.pt — loads any p value present
+    pl_models = {}
+    for fname in sorted(os.listdir(weights_dir)):
+        m = _re.fullmatch(r"pl(\d+)_encoder_best\.pt", fname)
+        if m:
+            p = int(m.group(1))
+            enc, hd = _load(f"pl{p}_encoder_best.pt", f"pl{p}_head_best.pt")
+            pl_models[p] = (enc, hd)
+            print(f"[exp8] PrefixL{p} weights loaded.")
+    if not pl_models:
+        print("[exp8] No PrefixLp weights found in this folder — skipping PrefixLp.")
 
     print("[exp8] Weights loaded successfully.")
-    return std_enc, std_hd, l1_enc, l1_hd, mat_enc, mat_hd, pl1_enc, pl1_hd
+    return std_enc, std_hd, l1_enc, l1_hd, mat_enc, mat_hd, pl_models
 
 
 # ==============================================================================
@@ -629,23 +647,24 @@ def plot_training_curves(run_dir, model_tags):
 # Plotting — Figure 1: per-dim bar charts (3 methods x 4 models)
 # ==============================================================================
 
-def plot_importance_scores(all_scores, run_dir, cfg):
+def plot_importance_scores(all_scores, run_dir, cfg, model_names):
     """
-    Save importance_scores.png: 3-method x 4-model grid of per-dim bar charts.
+    Save importance_scores.png: 3-method x N-model grid of per-dim bar charts.
 
     Rows = importance methods (mean_abs, variance, probe_acc).
-    Columns = models (Standard, L1, MRL, PCA).
+    Columns = models (from model_names).
     Each subplot is a horizontal bar chart with dims on the y-axis.
 
     Args:
-        all_scores (dict): {model_name: {"mean_abs": arr, "variance": arr,
-                            "probe_acc": arr}}.
-        run_dir    (str) : Output directory.
-        cfg        (ExpConfig): Uses embed_dim.
+        all_scores   (dict)      : {model_name: {"mean_abs": arr, ...}}.
+        run_dir      (str)       : Output directory.
+        cfg          (ExpConfig) : Uses embed_dim.
+        model_names  (list[str]) : Ordered list of model names to plot.
     """
+    import re as _re
     embed_dim = cfg.embed_dim
     n_methods = len(IMPORTANCE_METHODS)
-    n_models  = len(MODEL_NAMES)
+    n_models  = len(model_names)
     tick_step = 4 if embed_dim > 16 else 1
 
     fig, axes = plt.subplots(
@@ -657,11 +676,13 @@ def plot_importance_scores(all_scores, run_dir, cfg):
     dim_labels = [f"d{d}" for d in range(embed_dim)]
 
     for row, method in enumerate(IMPORTANCE_METHODS):
-        for col, model_name in enumerate(MODEL_NAMES):
+        for col, model_name in enumerate(model_names):
             ax     = axes[row, col]
             scores = all_scores[model_name][method]
             dims   = np.arange(embed_dim)
-            color  = MODEL_COLORS[model_name]
+            # Resolve color: base models use MODEL_COLORS[name]; PrefixLp uses p-keyed color
+            m = _re.fullmatch(r"PrefixL(\d+) \(rev\)", model_name)
+            color = get_pl_color(int(m.group(1))) if m else MODEL_COLORS.get(model_name, "gray")
 
             ax.barh(dims, scores, color=color, alpha=0.8)
             ax.set_xlim(left=0)
@@ -673,8 +694,7 @@ def plot_importance_scores(all_scores, run_dir, cfg):
             ax.set_yticklabels([dim_labels[d] for d in visible], fontsize=7)
 
             if row == 0:
-                ax.set_title(model_name, fontsize=11,
-                             color=color, fontweight="bold")
+                ax.set_title(model_name, fontsize=11, color=color, fontweight="bold")
             if col == 0:
                 ax.set_ylabel(METHOD_LABELS[method], fontsize=10)
 
@@ -691,7 +711,7 @@ def plot_importance_scores(all_scores, run_dir, cfg):
 # Plotting — Figure 2: heatmap (3 methods, each: 4 models x embed_dim dims)
 # ==============================================================================
 
-def plot_dim_importance_heatmap(all_scores, run_dir, cfg):
+def plot_dim_importance_heatmap(all_scores, run_dir, cfg, model_names):
     """
     Save dim_importance_heatmap.png: one heatmap panel per method.
 
@@ -700,9 +720,10 @@ def plot_dim_importance_heatmap(all_scores, run_dir, cfg):
     Color map: RdYlGn (low=red, high=green).
 
     Args:
-        all_scores (dict): {model_name: {method: np.ndarray}}.
-        run_dir    (str) : Output directory.
-        cfg        (ExpConfig): Uses embed_dim.
+        all_scores  (dict)      : {model_name: {method: np.ndarray}}.
+        run_dir     (str)       : Output directory.
+        cfg         (ExpConfig) : Uses embed_dim.
+        model_names (list[str]) : Ordered list of model names to include.
     """
     embed_dim = cfg.embed_dim
     n_methods = len(IMPORTANCE_METHODS)
@@ -720,7 +741,7 @@ def plot_dim_importance_heatmap(all_scores, run_dir, cfg):
 
         # Stack: shape (n_models, embed_dim)
         matrix = np.vstack([
-            all_scores[model_name][method] for model_name in MODEL_NAMES
+            all_scores[model_name][method] for model_name in model_names
         ])
 
         # Normalize each row independently to [0, 1]
@@ -731,8 +752,8 @@ def plot_dim_importance_heatmap(all_scores, run_dir, cfg):
         img = ax.imshow(norm, cmap="RdYlGn", aspect="auto", vmin=0, vmax=1)
         plt.colorbar(img, ax=ax, fraction=0.02, pad=0.04)
 
-        ax.set_yticks(range(len(MODEL_NAMES)))
-        ax.set_yticklabels(MODEL_NAMES, fontsize=9)
+        ax.set_yticks(range(len(model_names)))
+        ax.set_yticklabels(model_names, fontsize=9)
 
         visible_x = [d for d in range(embed_dim) if d % tick_step == 0]
         ax.set_xticks(visible_x)
@@ -742,7 +763,7 @@ def plot_dim_importance_heatmap(all_scores, run_dir, cfg):
 
         # Annotate cells with normalized value when embed_dim is small
         if annotate:
-            for r in range(len(MODEL_NAMES)):
+            for r in range(len(model_names)):
                 for c in range(embed_dim):
                     val       = norm[r, c]
                     txt_color = "black" if 0.25 < val < 0.75 else "white"
@@ -762,9 +783,9 @@ def plot_dim_importance_heatmap(all_scores, run_dir, cfg):
 # Plotting — Figure 3: best-k vs first-k accuracy (1 row x 4 cols)
 # ==============================================================================
 
-def plot_best_vs_first_k(all_gap_results, run_dir, cfg):
+def plot_best_vs_first_k(all_gap_results, run_dir, cfg, model_names):
     """
-    Save best_vs_first_k.png: accuracy curves per model (4 panels side by side).
+    Save best_vs_first_k.png: accuracy curves per model (N panels side by side).
 
     Each panel shows 4 lines:
       - first_k (black solid): standard prefix eval
@@ -775,12 +796,14 @@ def plot_best_vs_first_k(all_gap_results, run_dir, cfg):
     Small gap between first_k and best_k => strong dimension ordering.
 
     Args:
-        all_gap_results (dict): {model_name: {curve_key: {k: acc}}}.
-        run_dir         (str) : Output directory.
-        cfg             (ExpConfig): Uses eval_prefixes.
+        all_gap_results (dict)      : {model_name: {curve_key: {k: acc}}}.
+        run_dir         (str)       : Output directory.
+        cfg             (ExpConfig) : Uses eval_prefixes.
+        model_names     (list[str]) : Ordered list of model names to plot.
     """
+    import re as _re
     eval_prefixes = cfg.eval_prefixes
-    n_models      = len(MODEL_NAMES)
+    n_models      = len(model_names)
 
     CURVE_STYLES = {
         "first_k":          ("black",     "-",  "First-k (prefix eval)",  2.5),
@@ -793,9 +816,10 @@ def plot_best_vs_first_k(all_gap_results, run_dir, cfg):
         1, n_models, figsize=(6 * n_models, 5), sharey=True, squeeze=False,
     )
 
-    for col, model_name in enumerate(MODEL_NAMES):
-        ax    = axes[0, col]
-        color = MODEL_COLORS[model_name]
+    for col, model_name in enumerate(model_names):
+        ax   = axes[0, col]
+        m    = _re.fullmatch(r"PrefixL(\d+) \(rev\)", model_name)
+        color = get_pl_color(int(m.group(1))) if m else MODEL_COLORS.get(model_name, "gray")
         data  = all_gap_results[model_name]
 
         for curve_key, (c, ls, label, lw) in CURVE_STYLES.items():
@@ -828,7 +852,7 @@ def plot_best_vs_first_k(all_gap_results, run_dir, cfg):
 # Plotting — Figure 4: method agreement scatter (4 models x 3 method pairs)
 # ==============================================================================
 
-def plot_method_agreement(all_scores, all_agreement, run_dir, cfg):
+def plot_method_agreement(all_scores, all_agreement, run_dir, cfg, model_names):
     """
     Save method_agreement.png: scatter plots + Spearman rho annotations.
 
@@ -837,12 +861,14 @@ def plot_method_agreement(all_scores, all_agreement, run_dir, cfg):
     Spearman rho is annotated in the upper-left corner.
 
     Args:
-        all_scores    (dict): {model_name: {method: np.ndarray}}.
-        all_agreement (dict): {model_name: {(ma, mb): rho}}.
-        run_dir       (str) : Output directory.
-        cfg           (ExpConfig): Uses embed_dim.
+        all_scores    (dict)      : {model_name: {method: np.ndarray}}.
+        all_agreement (dict)      : {model_name: {(ma, mb): rho}}.
+        run_dir       (str)       : Output directory.
+        cfg           (ExpConfig) : Uses embed_dim.
+        model_names   (list[str]) : Ordered list of model names to plot.
     """
-    n_models  = len(MODEL_NAMES)
+    import re as _re
+    n_models  = len(model_names)
     n_pairs   = len(METHOD_PAIRS)
     annotate  = cfg.embed_dim <= 16
 
@@ -852,9 +878,10 @@ def plot_method_agreement(all_scores, all_agreement, run_dir, cfg):
         squeeze=False,
     )
 
-    for row, model_name in enumerate(MODEL_NAMES):
+    for row, model_name in enumerate(model_names):
         scores = all_scores[model_name]
-        color  = MODEL_COLORS[model_name]
+        m      = _re.fullmatch(r"PrefixL(\d+) \(rev\)", model_name)
+        color  = get_pl_color(int(m.group(1))) if m else MODEL_COLORS.get(model_name, "gray")
 
         for col, (ma, mb) in enumerate(METHOD_PAIRS):
             ax  = axes[row, col]
@@ -903,7 +930,7 @@ def plot_method_agreement(all_scores, all_agreement, run_dir, cfg):
 # ==============================================================================
 
 def save_results_summary(all_gap_results, all_agreement, all_scores,
-                          eval_prefixes, run_dir):
+                          eval_prefixes, run_dir, model_names):
     """
     Write results_summary.txt with three tables:
       Table 1: best-k vs first-k gap for all (model, method, k) combos.
@@ -911,11 +938,12 @@ def save_results_summary(all_gap_results, all_agreement, all_scores,
       Table 3: Top-5 most important dims per model per method.
 
     Args:
-        all_gap_results (dict): {model: {curve_key: {k: acc}}}.
-        all_agreement   (dict): {model: {(ma, mb): rho}}.
-        all_scores      (dict): {model: {method: np.ndarray}}.
-        eval_prefixes   (list): Prefix sizes.
-        run_dir         (str) : Output directory.
+        all_gap_results (dict)      : {model: {curve_key: {k: acc}}}.
+        all_agreement   (dict)      : {model: {(ma, mb): rho}}.
+        all_scores      (dict)      : {model: {method: np.ndarray}}.
+        eval_prefixes   (list)      : Prefix sizes.
+        run_dir         (str)       : Output directory.
+        model_names     (list[str]) : Ordered list of model names to include.
     """
     path = os.path.join(run_dir, "results_summary.txt")
     with open(path, "w") as f:
@@ -925,17 +953,17 @@ def save_results_summary(all_gap_results, all_agreement, all_scores,
         # --- Table 1: best-k vs first-k gaps ---
         f.write("TABLE 1: Best-k vs First-k Accuracy  (gap = best_k - first_k)\n")
         f.write("-" * 68 + "\n")
-        hdr = (f"{'k':>4}  {'Model':<10}  {'Method':<12}  "
+        hdr = (f"{'k':>4}  {'Model':<18}  {'Method':<12}  "
                f"{'first_k':>8}  {'best_k':>8}  {'gap':>8}")
         f.write(hdr + "\n")
         f.write("-" * len(hdr) + "\n")
         for k in eval_prefixes:
-            for model_name in MODEL_NAMES:
+            for model_name in model_names:
                 first_k = all_gap_results[model_name]["first_k"][k]
                 for method in IMPORTANCE_METHODS:
                     best_k = all_gap_results[model_name][f"best_k_{method}"][k]
                     gap    = best_k - first_k
-                    f.write(f"{k:>4}  {model_name:<10}  {method:<12}  "
+                    f.write(f"{k:>4}  {model_name:<18}  {method:<12}  "
                             f"{first_k:>8.4f}  {best_k:>8.4f}  {gap:>+8.4f}\n")
             f.write("\n")
 
@@ -943,24 +971,24 @@ def save_results_summary(all_gap_results, all_agreement, all_scores,
         f.write("\nTABLE 2: Spearman Rank Correlation Between Importance Methods\n")
         f.write("-" * 68 + "\n")
         pair_labels_short = [PAIR_LABELS[p] for p in METHOD_PAIRS]
-        hdr2 = f"{'Model':<12}  " + "  ".join(f"{pl:>18}" for pl in pair_labels_short)
+        hdr2 = f"{'Model':<18}  " + "  ".join(f"{pl:>18}" for pl in pair_labels_short)
         f.write(hdr2 + "\n")
         f.write("-" * len(hdr2) + "\n")
-        for model_name in MODEL_NAMES:
+        for model_name in model_names:
             rhos     = [all_agreement[model_name].get(p, float("nan")) for p in METHOD_PAIRS]
             rho_strs = "  ".join(f"rho={r:>+6.3f}" for r in rhos)
-            f.write(f"{model_name:<12}  {rho_strs}\n")
+            f.write(f"{model_name:<18}  {rho_strs}\n")
 
         # --- Table 3: top-5 dims per model per method ---
         f.write("\n\nTABLE 3: Top-5 Most Important Dims (descending importance)\n")
         f.write("-" * 68 + "\n")
-        hdr3 = f"{'Model':<12}  {'Method':<12}  Top-5 dims"
+        hdr3 = f"{'Model':<18}  {'Method':<12}  Top-5 dims"
         f.write(hdr3 + "\n")
         f.write("-" * len(hdr3) + "\n")
-        for model_name in MODEL_NAMES:
+        for model_name in model_names:
             for method in IMPORTANCE_METHODS:
                 top5 = np.argsort(all_scores[model_name][method])[::-1][:5].tolist()
-                f.write(f"{model_name:<12}  {method:<12}  {top5}\n")
+                f.write(f"{model_name:<18}  {method:<12}  {top5}\n")
             f.write("\n")
 
     print(f"[exp8] Results summary saved to {path}")
@@ -1092,9 +1120,19 @@ def main():
 
     # ------------------------------------------------------------------
     # Step 4: Setup output directory + save description
+    # When --use-weights is set, write all outputs (plots, logs, summaries)
+    # into the same folder as the loaded weights so results stay together.
     # ------------------------------------------------------------------
-    run_dir = create_run_dir()
-    print(f"[exp8] Outputs will be saved to: {run_dir}\n")
+    if weights_dir:
+        # Create a new timestamped subfolder *inside* the weights folder so that
+        # repeated --use-weights runs don't collide (e.g. code_snapshot already exists).
+        sub_stamp = time.strftime("exprmnt_%Y_%m_%d__%H_%M_%S")
+        run_dir   = os.path.join(weights_dir, sub_stamp)
+        os.makedirs(run_dir, exist_ok=True)
+        print(f"[exp8] --use-weights: outputs will be saved to: {run_dir}\n")
+    else:
+        run_dir = create_run_dir()
+        print(f"[exp8] Outputs will be saved to: {run_dir}\n")
     save_experiment_description(cfg, run_dir, weights_dir, args.fast)
 
     # ------------------------------------------------------------------
@@ -1113,7 +1151,7 @@ def main():
         print("STEP 5: Loading weights from existing run")
         print("=" * 60)
         std_encoder, std_head, l1_encoder, l1_head, mat_encoder, mat_head, \
-            pl1_encoder, pl1_head = load_models_from_dir(weights_dir, cfg, data)
+            pl_models = load_models_from_dir(weights_dir, cfg, data)
     else:
         print("=" * 60)
         print("STEP 5a: Training Standard model")
@@ -1136,12 +1174,22 @@ def main():
             cfg, data, run_dir, model_type="matryoshka", model_tag="mat"
         )
 
-        print("=" * 60)
-        print(f"STEP 5d: Training PrefixL1 model  (lambda={cfg.l1_lambda})")
-        print("=" * 60)
-        pl1_encoder, pl1_head = train_single_model(
-            cfg, data, run_dir, model_type="prefix_l1", model_tag="pl1"
-        )
+        # Train one PrefixLp model per p in LP_ORDERS (import from exp10 config or
+        # use a local default of [1] so exp8 still works standalone)
+        try:
+            from experiments.exp10_dense_multidim import LP_ORDERS as _LP_ORDERS
+        except ImportError:
+            _LP_ORDERS = [1]
+
+        pl_models = {}
+        for p in _LP_ORDERS:
+            print("=" * 60)
+            print(f"STEP 5+: Training PrefixL{p} model  (lambda={cfg.l1_lambda})")
+            print("=" * 60)
+            enc, hd = train_single_model(
+                cfg, data, run_dir, model_type=f"prefix_l{p}", model_tag=f"pl{p}"
+            )
+            pl_models[p] = (enc, hd)
 
     # ------------------------------------------------------------------
     # Step 6: Training curves (MANDATORY)
@@ -1149,10 +1197,11 @@ def main():
     print("=" * 60)
     print("STEP 6: Plotting training curves")
     print("=" * 60)
-    plot_training_curves(run_dir, model_tags=["standard", "l1", "mat", "pl1"])
+    pl_tags = [f"pl{p}" for p in sorted(pl_models)]
+    plot_training_curves(run_dir, model_tags=["standard", "l1", "mat"] + pl_tags)
 
     # ------------------------------------------------------------------
-    # Step 7: Extract embeddings for all 4 models
+    # Step 7: Extract embeddings for all models
     # ------------------------------------------------------------------
     print("=" * 60)
     print("STEP 7: Extracting embeddings")
@@ -1180,24 +1229,26 @@ def main():
         "Standard": (Z_train_std, Z_test_std),
         "L1":       (Z_train_l1,  Z_test_l1),
         "MRL":      (Z_train_mrl, Z_test_mrl),
-        "PCA":      (Z_train_pca, Z_test_pca),
     }
 
-    # PrefixL1 is optional — present when trained in this run or loaded from exp10
-    if pl1_encoder is not None:
-        Z_train_pl1 = get_embeddings_np(pl1_encoder, data.X_train)
-        Z_test_pl1  = get_embeddings_np(pl1_encoder, data.X_test)
-        print(f"[exp8] PrefixL1: train={Z_train_pl1.shape}, test={Z_test_pl1.shape}")
-        # Insert before PCA so ordering matches MODEL_NAMES
-        embeddings = {
-            "Standard": (Z_train_std, Z_test_std),
-            "L1":       (Z_train_l1,  Z_test_l1),
-            "MRL":      (Z_train_mrl, Z_test_mrl),
-            "PrefixL1": (Z_train_pl1, Z_test_pl1),
-            "PCA":      (Z_train_pca, Z_test_pca),
-        }
-    else:
-        print("[exp8] PrefixL1 not available — analysis will cover Standard, L1, MRL, PCA only.")
+    # For each PrefixLp model: extract then flip so most informative dim is first.
+    # Label: "PrefixL{p} (rev)" — consistent with exp10 and CLAUDE.md convention.
+    for p, (enc, _hd) in sorted(pl_models.items()):
+        Ztr = get_embeddings_np(enc, data.X_train)
+        Zte = get_embeddings_np(enc, data.X_test)
+        Ztr = np.ascontiguousarray(Ztr[:, ::-1])
+        Zte = np.ascontiguousarray(Zte[:,  ::-1])
+        embeddings[f"PrefixL{p} (rev)"] = (Ztr, Zte)
+        print(f"[exp8] PrefixL{p}: train={Ztr.shape}, reversed (most informative first)")
+
+    if not pl_models:
+        print("[exp8] No PrefixLp models — analysis covers Standard, L1, MRL, PCA only.")
+
+    embeddings["PCA"] = (Z_train_pca, Z_test_pca)   # PCA always last
+
+    # Build the ordered model name list used by all analyses and plots
+    model_names = list(embeddings.keys())
+    print(f"[exp8] Active models: {model_names}")
 
     # ------------------------------------------------------------------
     # Step 8: Analysis 1 — compute importance scores
@@ -1237,7 +1288,7 @@ def main():
     print("STEP 10: Analysis 3 — Method agreement")
     print("=" * 60)
     all_agreement = {}
-    for model_name in MODEL_NAMES:
+    for model_name in model_names:
         print(f"\n[exp8] Method agreement for {model_name} ...")
         all_agreement[model_name] = compute_method_agreement(
             importance_scores=all_scores[model_name],
@@ -1250,10 +1301,10 @@ def main():
     print("=" * 60)
     print("STEP 11: Saving plots")
     print("=" * 60)
-    plot_importance_scores(all_scores, run_dir, cfg)
-    plot_dim_importance_heatmap(all_scores, run_dir, cfg)
-    plot_best_vs_first_k(all_gap_results, run_dir, cfg)
-    plot_method_agreement(all_scores, all_agreement, run_dir, cfg)
+    plot_importance_scores(all_scores, run_dir, cfg, model_names)
+    plot_dim_importance_heatmap(all_scores, run_dir, cfg, model_names)
+    plot_best_vs_first_k(all_gap_results, run_dir, cfg, model_names)
+    plot_method_agreement(all_scores, all_agreement, run_dir, cfg, model_names)
 
     # ------------------------------------------------------------------
     # Step 12: Results summary
@@ -1262,7 +1313,7 @@ def main():
     print("STEP 12: Saving results summary")
     print("=" * 60)
     save_results_summary(all_gap_results, all_agreement, all_scores,
-                         cfg.eval_prefixes, run_dir)
+                         cfg.eval_prefixes, run_dir, model_names)
 
     # ------------------------------------------------------------------
     # Step 13: Runtime + code snapshot

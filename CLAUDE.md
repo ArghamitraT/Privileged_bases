@@ -74,6 +74,30 @@ python scripts/run_exp10_8_multidim.py --fast --dims 8
 - All outputs go to: `Mat_embedding_hyperbole/files/results/`
 - Each run creates a timestamped subfolder: `exprmnt_{timestamp}/`
 
+### `--use-weights` output convention
+**When an experiment is re-run with `--use-weights <folder>`, a new timestamped
+subfolder `exprmnt_{timestamp}` is created *inside* the weights folder, and all
+outputs go there.**
+
+Example: `--use-weights exprmnt_2026_04_01__22_04_54` produces:
+```
+files/results/exprmnt_2026_04_01__22_04_54/
+└── exprmnt_2026_04_02__10_30_00/   ← new subfolder for this re-run
+    ├── linear_accuracy_curve_....png
+    ├── results_summary.txt
+    ├── runtime.txt
+    └── code_snapshot/
+```
+
+Implementation pattern (used in exp8, exp10):
+```python
+sub_stamp = time.strftime("exprmnt_%Y_%m_%d__%H_%M_%S")
+run_dir   = os.path.join(weights_dir, sub_stamp)
+os.makedirs(run_dir, exist_ok=True)
+```
+- Applies to: exp8, exp10 (and any future experiment that adds `--use-weights`).
+- Do NOT write directly into `weights_dir` — `code_snapshot/` already exists there.
+
 ### Every experiment/edit MUST include:
 1. **Runtime logging** — `save_runtime(run_dir, elapsed)` at end of `main()`.
 2. **Code snapshot** — `save_code_snapshot(run_dir)` copies entire `code/` folder into `run_dir/code_snapshot/`.
@@ -85,6 +109,18 @@ python scripts/run_exp10_8_multidim.py --fast --dims 8
 - `results_summary.txt` — accuracy tables, per-seed raw values, key metrics.
 - `runtime.txt` — total elapsed time (seconds).
 - `code_snapshot/` — exact copy of code/ at run time.
+
+### PrefixL1 dimension-reversal convention
+**For any model trained with `PrefixL1` loss, dimensions must be reversed before
+any prefix sweep or analysis.**  Reason: the loss penalises dim 0 most heavily
+(lightest penalty on dim `embed_dim-1`), so dim 0 carries the least information.
+Flipping puts the most informative dimension first, making the prefix sweep
+read best-first (matching MRL's convention).
+
+- After extracting embeddings: `Z = np.ascontiguousarray(Z[:, ::-1])`
+- Use key / legend label `"PrefixL1 (rev)"` everywhere (plots, tables, legends).
+- Already implemented in: exp10 (step 9), exp8 (step 7).
+- Must be applied in any future experiment that evaluates PrefixL1 with a prefix sweep.
 
 ### Figure filename timestamping convention
 **All figure filenames must include a `_{YYYY_MM_DD__{HH_MM_SS}` suffix** so that
