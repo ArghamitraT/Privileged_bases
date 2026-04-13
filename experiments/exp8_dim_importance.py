@@ -37,6 +37,8 @@ Outputs (all in a new timestamped run folder):
   runtime.txt
   code_snapshot/
 
+Conda environment: mrl_env
+
 Usage:
     python experiments/exp8_dim_importance.py --fast                       # smoke test (digits, 5 epochs)
     python experiments/exp8_dim_importance.py                              # full run (MNIST, 20 epochs)

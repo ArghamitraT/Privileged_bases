@@ -8,6 +8,82 @@ For a high-level overview, see [CLAUDE.md](CLAUDE.md).
 
 ---
 
+## Data
+
+### Directory Convention (all clusters)
+
+All datasets live under:
+```
+$HOME/Mat_embedding_hyperbole/data/<dataset_name>/
+```
+`$HOME` varies per cluster; the rest of the path is fixed. This means the same
+relative data paths work everywhere without editing any code.
+
+### PBMC 10k Multiome (used in Exp 11)
+
+**Source:** 10x Genomics — PBMC from a healthy donor, granulocytes removed, 10k cells, Multiome ATAC + GEX, v2.0.0
+
+**Download:**
+```bash
+bash scripts/bash/download_pbmc.sh
+# saves to: $HOME/Mat_embedding_hyperbole/data/pbmc_10k_multiome/
+```
+
+**Files downloaded:**
+| File | Size | Purpose |
+|------|------|---------|
+| `pbmc_granulocyte_sorted_10k_filtered_feature_bc_matrix.h5` | ~192 MB | GEX + ATAC count matrix (cells × features) |
+| `pbmc_granulocyte_sorted_10k_analysis.tar.gz` | ~485 MB | Cluster assignments, UMAP coords (cell type labels for supervised MRL) |
+
+**After download, extract analysis outputs:**
+```bash
+tar -xzf $HOME/Mat_embedding_hyperbole/data/pbmc_10k_multiome/pbmc_granulocyte_sorted_10k_analysis.tar.gz \
+    -C $HOME/Mat_embedding_hyperbole/data/pbmc_10k_multiome/
+```
+
+**Note:** Verify URLs in `scripts/bash/download_pbmc.sh` against the 10x dataset page before running on a new cluster.
+
+---
+
+## Environment Management (across clusters)
+
+Conda env: `mrl_env` — defined in `env/mrl_env.yml` (source of truth).
+
+### Scripts
+
+| Script | When to run |
+|--------|------------|
+| `scripts/bash/create_env.sh` | Fresh cluster — env does not exist yet |
+| `scripts/bash/sync_push.sh` | Instead of `git_push.sh` — auto-updates yml with new pip packages then pushes |
+| `scripts/bash/git_pull.sh` | Instead of `git pull` — pulls then auto-updates env if yml changed |
+
+### Workflow
+
+**Adding a new package on any cluster:**
+```bash
+pip install <package>
+bash scripts/bash/sync_push.sh "your commit message"
+# auto-detects new package → adds to mrl_env.yml → commits → pushes
+```
+
+**On another cluster after a push:**
+```bash
+bash scripts/bash/git_pull.sh
+# pulls → detects if mrl_env.yml changed → runs conda env update automatically
+```
+
+**Fresh cluster (env doesn't exist yet):**
+```bash
+git clone <repo>
+conda activate base
+bash scripts/bash/create_env.sh
+conda activate mrl_env
+```
+
+**Rule:** never run plain `git push` or `git pull` — always use `sync_push.sh` and `git_pull.sh` so the env stays in sync across clusters.
+
+---
+
 ## Experiment 1: Prefix Performance Curve
 
 ### Idea
@@ -523,4 +599,248 @@ files/results/exprmnt_{timestamp}/
 ├── results_summary.txt         # table: k × model × linear_acc × 1nn_acc
 ├── runtime.txt
 └── code_snapshot/
+```
+
+---
+
+## Experiment 11: LearnedPrefixLp — MRL vs PrefixLp vs LearnedPrefixLp
+
+### Idea
+
+Exp10 showed that PrefixLp with different fixed p values produces different
+ordering quality. The natural next question: can the model learn p itself?
+
+Three loss families are compared on the dense prefix sweep:
+1. **MRL** — Matryoshka loss: CE summed at every prefix scale k=1..embed_dim
+2. **PrefixLp** — CE + front-loaded weighted Lp penalty, p fixed as hyperparameter
+3. **LearnedPrefixLp** — same penalty as PrefixLp, but p is a scalar `nn.Parameter`
+   optimised jointly with the encoder and head via gradient descent
+
+Scientific question: does gradient descent converge to a stable p, and does the
+learned p produce better prefix ordering than any fixed p?
+
+### Key Design Decisions
+
+- `p = 1 + softplus(p_raw).clamp(max=P_MAX)` — guarantees p > 1, finite, differentiable
+- At `p_raw=0.0`, effective p ≈ 1.69 (neutral start between L1 and L2)
+- `P_MAX=10.0` clamps p ∈ (1, 11] — safety guardrail, noted in code comment
+- Optimizer for LearnedPrefixLp includes `loss_fn.parameters()` to give `p_raw` gradients
+- `train_learned_p()` — local training loop (copy of `trainer.train()` + p tracking);
+  does NOT modify the shared trainer
+- Dimension reversal applied to both PrefixLp and LearnedPrefixLp before eval
+  (same convention as exp10 PrefixLp)
+- Standard and PCA excluded — isolates the loss family comparison
+
+### Inputs / Outputs
+
+- **Input**: MNIST (full) or digits (fast), embed_dim=8 (CONFIG)
+- **Output**: same prefix sweep plots as exp10 for 3 models, plus two new plots
+
+### Eval Metrics
+
+- **Linear accuracy** — logistic regression probe on k-dim prefix at every k
+- **1-NN accuracy** — 1-nearest-neighbor at every k
+
+### New outputs (exp11-specific)
+
+| File | Contents |
+|------|----------|
+| `p_trajectory_{stamp}.png` | learned p vs epoch with reference lines at p=1,2,3,P_FIXED |
+| `p_and_val_acc_{stamp}.png` | dual-axis: p (left, blue) and full-embedding val accuracy (right, red) vs epoch |
+
+`results_summary.txt` includes a `LEARNED P SUMMARY` section with `p_init`, `p_final`, and the full `p_trajectory` list.
+
+### File Structure
+
+- `experiments/exp11_learned_prefix_lp.py` — main script
+- `losses/mat_loss.py` — `LearnedPrefixLpLoss` class + `"prefix_lp_learned"` in `build_loss()`
+- `tests/run_tests_exp11.py` — test runner (4 unit tests + e2e smoke)
+- `tests/helper_exp11_loss.py` — subprocess helper for torch-dependent loss test
+
+### How to Run
+
+```bash
+python experiments/exp11_learned_prefix_lp.py        # full run (MNIST, embed_dim=8)
+python experiments/exp11_learned_prefix_lp.py --fast # smoke test (digits, 3 epochs)
+python tests/run_tests_exp11.py --fast               # unit tests only
+python tests/run_tests_exp11.py                      # unit tests + e2e smoke
+```
+
+### Expected Output
+
+```
+files/results/exprmnt_{timestamp}/
+├── experiment_description.log
+├── mat_encoder_best.pt      / mat_head_best.pt
+├── pl5_encoder_best.pt      / pl5_head_best.pt
+├── lp_learned_encoder_best.pt / lp_learned_head_best.pt
+├── mat_train.log / pl5_train.log / lp_learned_train.log
+├── training_curves_{stamp}.png       # loss vs epoch — all 3 models (MANDATORY)
+├── p_trajectory_{stamp}.png          # learned p vs epoch with reference lines
+├── p_and_val_acc_{stamp}.png         # dual-axis p + val accuracy vs epoch
+├── linear_accuracy_curve_{stamp}.png # linear accuracy: 3 lines vs k=1..embed_dim
+├── 1nn_accuracy_curve_{stamp}.png    # 1-NN accuracy:   3 lines vs k=1..embed_dim
+├── combined_comparison_{stamp}.png   # 2-panel (linear top, 1-NN bottom)
+├── results_summary.txt               # LEARNED P SUMMARY + accuracy table
+├── runtime.txt
+└── code_snapshot/
+```
+
+---
+
+## Experiment 12: VectorLearnedPrefixLp — MRL vs ScalarLearnedPrefixLp vs VectorLearnedPrefixLp
+
+### Idea
+
+Exp11 introduced a scalar learned p. Here p becomes a vector of shape `(embed_dim,)` —
+each embedding dimension has its own independently learned exponent.
+
+Three models compared:
+1. **MRL** — Matryoshka loss
+2. **ScalarLearnedPrefixLp** — one shared p for all dims (from exp11)
+3. **VectorLearnedPrefixLp** — one p per dim, all learned jointly
+
+Scientific questions:
+- Do different dims converge to different p values?
+- Do high-penalty dims (large `dim_weight`) learn higher or lower p than low-penalty dims?
+- Does per-dim p improve prefix ordering over scalar p?
+- Do the three models agree on which dims are most important?
+
+### Key Design Decisions
+
+- `p_raw: nn.Parameter` shape `(embed_dim,)` — one unconstrained value per dim
+- `p = 1 + softplus(p_raw).clamp(max=P_MAX)` — same constraint as scalar, applied per-dim
+- `(|z| + 1e-8).pow(p)` broadcasts correctly: `(batch, embed_dim) ^ (embed_dim,)`
+- Single `train_learned_p()` handles both scalar and vector by detecting `loss_fn.p.ndim`
+- `p_trajectory` stored as list of numpy arrays (shape `()` scalar or `(embed_dim,)` vector)
+- Dimension reversal applied to both Lp models (same convention as exp10/exp11)
+- Importance scores + method agreement imported from exp8 — `MODEL_COLORS` patched locally
+
+### Eval Metrics
+
+- **Linear accuracy** — logistic regression probe on k-dim prefix at every k
+- **1-NN accuracy** — 1-nearest-neighbor at every k
+- **Per-dim importance** — mean |z|, variance, 1D probe accuracy (from exp8)
+- **Method agreement** — Spearman rho between importance scoring methods (from exp8)
+
+### File Structure
+
+- `experiments/exp12_vector_learned_p.py` — main script
+- `losses/mat_loss.py` — `VectorLearnedPrefixLpLoss` + `"prefix_lp_vector_learned"` in `build_loss()`
+- `tests/run_tests_exp12.py` — test runner (4 unit tests + e2e smoke)
+- `tests/helper_exp12_loss.py` — subprocess helper for torch-dependent vector loss test
+
+### How to Run
+
+```bash
+python experiments/exp12_vector_learned_p.py        # full run (MNIST, embed_dim=8)
+python experiments/exp12_vector_learned_p.py --fast # smoke test (digits, 3 epochs)
+python tests/run_tests_exp12.py --fast              # unit tests only
+python tests/run_tests_exp12.py                     # unit tests + e2e smoke
+```
+
+### Expected Output
+
+```
+files/results/exprmnt_{timestamp}/
+├── experiment_description.log
+├── mat_encoder_best.pt / mat_head_best.pt
+├── sc_learned_encoder_best.pt / sc_learned_head_best.pt
+├── vec_learned_encoder_best.pt / vec_learned_head_best.pt
+├── mat_train.log / sc_learned_train.log / vec_learned_train.log
+├── training_curves_{stamp}.png          # loss vs epoch — all 3 models (MANDATORY)
+├── scalar_p_trajectory_{stamp}.png      # single p line vs epoch
+├── scalar_p_and_val_acc_{stamp}.png     # dual-axis scalar p + val acc
+├── vector_p_trajectory_{stamp}.png      # embed_dim colored lines vs epoch
+├── vector_p_and_val_acc_{stamp}.png     # dual-axis mean p + val acc, min/max band
+├── importance_scores_{stamp}.png        # 3-method x 3-model bar charts (from exp8)
+├── method_agreement_{stamp}.png         # Spearman rho scatter per model (from exp8)
+├── linear_accuracy_curve_{stamp}.png
+├── 1nn_accuracy_curve_{stamp}.png
+├── combined_comparison_{stamp}.png
+├── results_summary.txt                  # scalar p, vector p, agreement, accuracy table
+├── runtime.txt
+└── code_snapshot/
+```
+
+---
+
+## Exp 13 — Supervised MRL on CD34 vs SEACells
+
+**Script:** `experiments/exp13_mrl_cd34_supervised.py`
+**Conda env:** `mrl_env`
+
+### Idea
+Train multiple loss variants on the CD34 HSPC gene expression dataset using known
+cell type labels as supervision. Evaluate each model with a dense prefix sweep
+(k = 1..EMBED_DIM) using k-means clustering and three metrics — cell type purity,
+compactness, separation — and compare against the SEACells metacell baseline stored
+in the h5ad file (`adata.obs['SEACell']`).
+
+This is the **supervised upper-bound** experiment in the MRL-SEACells roadmap
+(see `plans/mrl_seacells.md`).
+
+### Inputs
+- `$HOME/Mat_embedding_hyperbole/data/cd34_multiome/GSE200046_cd34_multiome_rna.h5ad`
+  - 6,881 CD34+ HSPCs, 8 cell types (HSC, HMP, MEP, Ery, Mono, cDC, pDC, CLP)
+  - Contains: `adata.X` (log-normalised), `adata.var['highly_variable']`,
+    `adata.obsm['X_pca']` (30 PCs), `adata.obsm['X_umap']`,
+    `adata.obs['celltype']`, `adata.obs['SEACell']` (paper's metacell IDs)
+
+### Models trained (controlled by `MODELS_TO_RUN` in CONFIG)
+| Tag | Loss class | Notes |
+|---|---|---|
+| `pca` | sklearn PCA | No training; first-k dims = max variance |
+| `ce` | `StandardLoss` | Plain cross-entropy on full embedding |
+| `mrl` | `MatryoshkaLoss` | CE at each prefix in `MRL_TRAIN_PREFIXES` |
+| `fixed_lp` | `PrefixLpLoss(p=FIXED_LP_P)` | Ordered Lp; dims reversed before eval |
+| `learned_lp` | `LearnedPrefixLpLoss` | Scalar p learned jointly with encoder |
+| `learned_lp_vec` | `VectorLearnedPrefixLpLoss` | Per-dim p learned jointly |
+
+### Evaluation
+- **Dense prefix sweep:** k = 1..EMBED_DIM applied to all models
+- **MRL training prefixes** (`MRL_TRAIN_PREFIXES`): sparse subset used in loss only
+- **k-means:** `N_CLUSTERS` clusters per model per k (default 100, match SEACells)
+- **Metrics per cluster set:**
+  - Cell type purity: median dominant-cell-type fraction per cluster (↑ better)
+  - Compactness: median mean distance to cluster centroid (↓ better)
+  - Separation: median nearest-centroid distance (↑ better)
+- **SEACells reference:** purity/compactness/separation from paper's assignments,
+  plotted as a dashed horizontal line on each curve
+
+### How to run
+```bash
+conda activate mrl_env
+python experiments/exp13_mrl_cd34_supervised.py          # full run
+python experiments/exp13_mrl_cd34_supervised.py --fast   # smoke test (500 cells, embed_dim=8)
+python experiments/exp13_mrl_cd34_supervised.py --use-weights exprmnt_XYZ  # plots only
+python tests/run_tests_exp13.py --fast                   # unit tests only
+python tests/run_tests_exp13.py                          # unit tests + e2e smoke
+```
+
+### Expected outputs
+```
+exprmnt_{timestamp}/
+├── training_curves_{stamp}.png           # loss vs epoch for all trained models
+├── prefix_purity_curve_{stamp}.png       # purity vs k, all models + SEACells line
+├── prefix_compactness_curve_{stamp}.png  # compactness vs k
+├── prefix_separation_curve_{stamp}.png   # separation vs k
+├── umap_comparison_{stamp}.png           # 3-panel: cell types | MRL clusters | SEACells
+├── cd34_embeddings.npz                   # embeddings per model tag (n_cells, embed_dim)
+├── {tag}_encoder.pt                      # saved weights per trained model
+├── {tag}_head.pt
+├── results_summary.txt                   # table: model × k × purity × compact × sep
+├── experiment_description.log
+├── runtime.txt
+└── code_snapshot/
+```
+
+### Key CONFIG parameters
+```python
+EMBED_DIM          = 30     # match SEACells PCA dim
+N_HVG              = 2000   # input features
+MRL_TRAIN_PREFIXES = [2, 4, 8, 16, 30]
+N_CLUSTERS         = 100    # k-means clusters (match SEACells n_metacells)
+FIXED_LP_P         = 1      # exponent for fixed_lp (1 = PrefixL1)
+MODELS_TO_RUN      = ["pca", "ce", "mrl", "fixed_lp", "learned_lp", "learned_lp_vec"]
 ```

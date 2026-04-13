@@ -20,3 +20,12 @@ dependencies:
     - tqdm
     - scipy           # used for cdist in exp2 cluster metrics
     - plotly          # used for exp2 interactive 4D HTML visualisation
+    - anaconda-anon-usage
+    - brotli
+    - conda-anaconda-telemetry
+    - conda-anaconda-tos
+    - conda-content-trust
+    - conda-libmamba-solver
+    - libmambapy
+    - pysocks
+    - ruamel.yaml.clib

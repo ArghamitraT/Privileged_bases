@@ -40,6 +40,8 @@ Outputs (all saved in a new timestamped run folder):
   runtime.txt
   code_snapshot/
 
+Conda environment: mrl_env
+
 Usage:
     python experiments/exp2_cluster_viz.py --use-exp1         # load exp1 weights, full MNIST
     python experiments/exp2_cluster_viz.py --use-exp1 --fast  # load exp1 weights, subsampled

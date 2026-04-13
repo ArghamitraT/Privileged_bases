@@ -26,6 +26,9 @@ Explore whether Matryoshka Representation Learning (MRL) increases embedding int
 | 8 | `exp8_dim_importance.py` | Per-dim importance scoring + best-k vs first-k gap |
 | 9 | `exp9_dense_prefix.py` | Dense prefix sweep (k=1..64), multi-seed |
 | 10 | `exp10_dense_multidim.py` | Exp7 without FF, dense prefix (k=1..embed_dim), multi-dim |
+| 11 | `exp11_learned_prefix_lp.py` | MRL vs PrefixLp (fixed p) vs LearnedPrefixLp (p learned) |
+| 12 | `exp12_vector_learned_p.py` | MRL vs ScalarLearnedPrefixLp vs VectorLearnedPrefixLp (p per dim) |
+| 13 | `exp13_mrl_cd34_supervised.py` | Supervised MRL on CD34 HSPCs — prefix clustering vs SEACells baseline |
 
 ### Quick-start (common run commands)
 ```bash
@@ -37,12 +40,18 @@ python experiments/exp7_mrl_vs_ff.py --fast
 python experiments/exp8_dim_importance.py --fast
 python experiments/exp9_dense_prefix.py --fast
 python experiments/exp10_dense_multidim.py --fast
+python experiments/exp11_learned_prefix_lp.py --fast
+python experiments/exp12_vector_learned_p.py --fast
+python experiments/exp13_mrl_cd34_supervised.py --fast
 
 # Per-experiment unit tests
 python tests/run_tests_exp7.py --fast
 python tests/run_tests_exp8.py --fast
 python tests/run_tests_exp9.py --fast
 python tests/run_tests_exp10.py --fast
+python tests/run_tests_exp11.py --fast
+python tests/run_tests_exp12.py --fast
+python tests/run_tests_exp13.py --fast
 
 # Multi-dim wrapper (exp10 → exp8 for each of dims 8, 16, 32)
 python scripts/run_exp10_8_multidim.py --fast --dims 8
@@ -71,8 +80,9 @@ python scripts/run_exp10_8_multidim.py --fast --dims 8
 
 ### Output Rules
 - Code lives in `code/` (git-tracked). Results do NOT go in git.
-- All outputs go to: `Mat_embedding_hyperbole/files/results/`
-- Each run creates a timestamped subfolder: `exprmnt_{timestamp}/`
+- Full runs go to: `Mat_embedding_hyperbole/files/results/exprmnt_{timestamp}/`
+- `--fast` (smoke test) runs go to: `Mat_embedding_hyperbole/files/results/test_runs/exprmnt_{timestamp}/`
+- Use `create_run_dir(fast=args.fast)` from `utility.py` — it handles both paths automatically.
 
 ### `--use-weights` output convention
 **When an experiment is re-run with `--use-weights <folder>`, a new timestamped
@@ -244,10 +254,30 @@ Shared modules: `trainer.py`, `prefix_eval.py`, `loader.py`, `encoder.py`,
 
 ---
 
-## Conda Environment
-- Current env: `mrl_env` → `env/mrl_env.yml`
+## Conda Environments
+
+### Per-script convention
+Every script docstring declares which environment it requires on a line:
+```
+Conda environment: <env_name>  (short note if non-obvious)
+```
+This line appears at the top of the `Usage:` block so it is the first thing seen when opening a script.
+
+### Environments in use
+
+| Environment | Scripts | Purpose |
+|-------------|---------|---------|
+| `mrl_env` | all `exp*.py` | MRL training + evaluation (PyTorch, sklearn, etc.) |
+| `seacells` | `seacells_*.py` | SEACells metacell analysis (scanpy, SEACells) |
+
+### mrl_env
+- Definition: `env/mrl_env.yml`
 - Create: `conda env create -f env/mrl_env.yml`
 - Activate: `conda activate mrl_env`
+
+### seacells
+- Separate env for SEACells pipeline (incompatible PyTorch/scanpy versions)
+- Activate: `conda activate seacells`
 
 ## Dependencies
 - Core: numpy, pandas, seaborn, matplotlib, sklearn, scipy

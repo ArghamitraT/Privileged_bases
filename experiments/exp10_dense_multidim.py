@@ -52,6 +52,8 @@ Outputs (all in a new timestamped run folder):
   runtime.txt
   code_snapshot/
 
+Conda environment: mrl_env
+
 Usage:
     python experiments/exp10_dense_multidim.py                            # full run (MNIST, embed_dim=8)
     python experiments/exp10_dense_multidim.py --fast                     # smoke test (digits, 5 epochs)

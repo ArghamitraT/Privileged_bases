@@ -24,6 +24,8 @@ Core hypothesis:
 Key prediction: Only Ortho + Mat recovers both eigenvectors AND ordering.
 The others recover the subspace but not the individual basis directions.
 
+Conda environment: mrl_env
+
 Usage:
     python experiments/exp6_ortho_mat_ae.py                                         # full run (digits, embed_dim=10)
     python experiments/exp6_ortho_mat_ae.py --fast                                  # smoke test (fewer epochs)

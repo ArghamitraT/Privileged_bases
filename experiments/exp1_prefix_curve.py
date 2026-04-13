@@ -18,6 +18,8 @@ All outputs (logs, weights, config snapshot, plot) are saved to a timestamped
 folder under:
     Mat_embedding_hyperbole/files/results/exp1_prefix_curve_{timestamp}/
 
+Conda environment: mrl_env
+
 Usage:
     python experiments/exp1_prefix_curve.py
 

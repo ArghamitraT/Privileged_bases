@@ -88,7 +88,7 @@ def get_path(target_suffix: str, root_name: str = "Mat_embedding_hyperbole") -> 
 # Run output directory
 # ==============================================================================
 
-def create_run_dir() -> str:
+def create_run_dir(fast: bool = False) -> str:
     """
     Create a timestamped output folder for a single experiment run.
 
@@ -96,25 +96,29 @@ def create_run_dir() -> str:
     The folder is always named:
         exprmnt_{YYYY_MM_DD__{HH_MM_SS}
 
-    and is created at:
+    Full runs are created at:
         Mat_embedding_hyperbole/files/results/exprmnt_{timestamp}/
 
+    --fast (smoke test) runs are created at:
+        Mat_embedding_hyperbole/files/results/test_runs/exprmnt_{timestamp}/
+
     This folder is outside the code/ directory and is NOT tracked by git.
+
+    Args:
+        fast (bool): If True, place the run under files/results/test_runs/.
+                     Pass args.fast from the experiment's argparse.
 
     Returns:
         str: Absolute path to the newly created run directory.
 
     Example:
         >>> run_dir = create_run_dir()
-        >>> # returns something like:
-        >>> # .../Mat_embedding_hyperbole/files/results/exprmnt_2026_03_06__14_30_00/
+        >>> run_dir = create_run_dir(fast=True)
     """
-    # Folder name is always exprmnt + timestamp
     folder_name = create_timestamped_filename("exprmnt")
 
-    # Place it under files/results/ in the project root
-    results_base = get_path("files/results")
-    run_dir = os.path.join(results_base, folder_name)
+    base = get_path("files/results/test_runs") if fast else get_path("files/results")
+    run_dir = os.path.join(base, folder_name)
     os.makedirs(run_dir, exist_ok=True)
 
     print(f"[utility] Run directory created: {run_dir}")

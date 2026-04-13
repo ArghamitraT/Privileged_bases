@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # =============================================================================
-# git_push.sh
-# ===========
-# Stage all source files (.py .sh .md .yaml .yml .txt), commit, and push.
+# git_push.sh — stage and push, no env sync.
+# Use this for a plain commit+push. If you may have installed new packages
+# and want mrl_env.yml updated too, use sync_push.sh instead.
 #
 # Handles:
-#   - New and modified files for each extension
+#   - New and modified files for each extension (.py .sh .md .yaml .yml .txt)
 #   - Deleted tracked files for each extension
 #   - Extensions with no matching files (skipped gracefully)
 #   - Nothing to commit (exits cleanly)
 #
 # Usage:
-#   bash git_push.sh "your commit message"   # message as argument
-#   bash git_push.sh                          # will prompt for message
+#   bash scripts/bash/git_push.sh "your commit message"   # message as argument
+#   bash scripts/bash/git_push.sh                          # will prompt for message
 # =============================================================================
 
 set -euo pipefail
@@ -22,6 +22,15 @@ set -euo pipefail
 # ============================================================
 EXTENSIONS=("py" "sh" "md" "yaml" "yml" "txt")
 # ============================================================
+
+# ---- Resolve git root (script may be called from anywhere) ----
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+GIT_ROOT=$(git -C "${SCRIPT_DIR}" rev-parse --show-toplevel 2>/dev/null || true)
+if [[ -z "${GIT_ROOT}" ]]; then
+    echo "ERROR: Not inside a git repository."
+    exit 1
+fi
+cd "${GIT_ROOT}"
 
 # ---- Get commit message ----
 if [[ $# -ge 1 ]]; then
@@ -36,14 +45,6 @@ if [[ -z "${COMMIT_MSG}" ]]; then
     exit 1
 fi
 
-# ---- Move to git root ----
-GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
-if [[ -z "${GIT_ROOT}" ]]; then
-    echo "ERROR: Not inside a git repository."
-    exit 1
-fi
-cd "${GIT_ROOT}"
-
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 echo "============================================================"
 echo "git_push.sh"
@@ -57,13 +58,11 @@ echo ""
 TOTAL_STAGED=0
 
 for ext in "${EXTENSIONS[@]}"; do
-    # Count matching files (macOS bash 3.2 compatible — no mapfile)
     FILE_COUNT=$(find . -path './.git' -prune -o \
                         -type f -name "*.${ext}" -print 2>/dev/null | wc -l)
-    FILE_COUNT="${FILE_COUNT// /}"   # strip whitespace from wc output
+    FILE_COUNT="${FILE_COUNT// /}"
 
     if [[ "${FILE_COUNT}" -gt 0 ]]; then
-        # Stage via xargs to handle spaces in filenames safely
         find . -path './.git' -prune -o \
                -type f -name "*.${ext}" -print0 2>/dev/null \
             | xargs -0 git add --ignore-errors -- 2>/dev/null || true
@@ -75,9 +74,8 @@ for ext in "${EXTENSIONS[@]}"; do
 done
 
 # ---- Stage deleted tracked files ----
-# Build grep pattern from EXTENSIONS array: py|sh|md|yaml|yml|txt
 EXT_PATTERN=$(printf '%s|' "${EXTENSIONS[@]}")
-EXT_PATTERN="${EXT_PATTERN%|}"   # strip trailing |
+EXT_PATTERN="${EXT_PATTERN%|}"
 
 DELETED=$(git ls-files --deleted | grep -E "\.(${EXT_PATTERN})$" || true)
 if [[ -n "${DELETED}" ]]; then

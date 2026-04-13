@@ -32,6 +32,16 @@ PrefixLpLoss
     "prefix_l3", "prefix_l4") and constructs PrefixLpLoss with the
     matching p.
 
+LearnedPrefixLpLoss
+    Same penalty as PrefixLpLoss, but p is a scalar nn.Parameter optimised
+    jointly with the encoder/head via gradient descent.
+    build_loss() accepts model_type="prefix_lp_learned".
+
+VectorLearnedPrefixLpLoss
+    Same as LearnedPrefixLpLoss but p is a vector nn.Parameter of shape
+    (embed_dim,) — one learned exponent per embedding dimension.
+    build_loss() accepts model_type="prefix_lp_vector_learned".
+
 All classes share the same interface:
     loss = criterion(embedding, labels, head)
 so the training loop does not need to know which loss is being used.
@@ -308,6 +318,204 @@ PrefixL1Loss = PrefixLpLoss
 
 
 # ==============================================================================
+# LearnedPrefixLp loss — same penalty as PrefixLpLoss but p is an nn.Parameter
+# ==============================================================================
+
+class LearnedPrefixLpLoss(nn.Module):
+    """
+    Cross-entropy loss with a Matryoshka-style weighted L_p penalty where the
+    exponent p is a scalar nn.Parameter optimised jointly with the encoder/head.
+
+    Parameterisation:
+        p_raw  : nn.Parameter  (unconstrained scalar, init = p_init)
+        p      = 1.0 + softplus(p_raw).clamp(max=p_max)
+
+    This guarantees p > 1 at all times and keeps it bounded.  At p_init=0.0
+    the effective starting value is p ≈ 1.69  (between L1 and L2).
+
+    Penalty (same dim_weights as PrefixLpLoss):
+        penalty = (dim_weights * (|z| + eps).pow(p)).mean(dim=0).sum()
+        w_j = (embed_dim - j)  →  dim 0 penalised most, dim d-1 least
+
+    eps=1e-8 guards the gradient  d/dp (|z|+eps)^p = (|z|+eps)^p * log(|z|+eps)
+    against the 0 * (-inf) case when activations are exactly zero.
+
+    The p_max clamp is a safety guardrail against extreme exponents causing
+    numerical instability.  It does not encode a prior on the optimal p — if
+    the model pushes p to the boundary that is a result worth reporting.
+
+    IMPORTANT — the optimiser must include loss_fn.parameters() to give p_raw
+    gradients:
+
+        opt = Adam(
+            list(encoder.parameters()) +
+            list(head.parameters()) +
+            list(loss_fn.parameters()),
+            lr=...,
+        )
+
+    Args:
+        embed_dim (int)  : Total embedding dimension d.
+        lambda_l1 (float): Regularisation strength. Default 0.05.
+        p_init    (float): Initial value of p_raw (unconstrained).
+                           Default 0.0  →  effective p ≈ 1.69 at epoch 0.
+        p_max     (float): Clamp bound; effective p ∈ (1.0, 1.0 + p_max].
+                           Default 10.0  →  p ∈ (1.0, 11.0].
+    """
+
+    def __init__(self, embed_dim: int, lambda_l1: float = 0.05,
+                 p_init: float = 0.0, p_max: float = 10.0):
+        super().__init__()
+
+        self.ce        = nn.CrossEntropyLoss()
+        self.lambda_l1 = lambda_l1
+        self.p_max     = float(p_max)
+
+        # Unconstrained learnable scalar parameter
+        self.p_raw = nn.Parameter(torch.tensor(float(p_init)))
+
+        # dim_weights[j] = embed_dim - j: dim 0 penalised most, dim d-1 least.
+        w = torch.arange(embed_dim, 0, -1, dtype=torch.float32)
+        self.register_buffer("dim_weights", w)
+
+        eff_p = 1.0 + float(F.softplus(torch.tensor(float(p_init))).clamp(max=p_max))
+        print(f"[LearnedPrefixLpLoss] embed_dim={embed_dim}, lambda_l1={lambda_l1}, "
+              f"p_init(raw)={p_init}, p_init(eff)={eff_p:.3f}, p_max={p_max}")
+        print(f"  dim_weights (first 8): {w[:8].tolist()}")
+
+    @property
+    def p(self) -> torch.Tensor:
+        """Effective exponent — differentiable tensor, always > 1."""
+        return 1.0 + F.softplus(self.p_raw).clamp(max=self.p_max)
+
+    def forward(
+        self,
+        embedding: torch.Tensor,
+        labels: torch.Tensor,
+        head: nn.Module,
+    ) -> torch.Tensor:
+        """
+        Compute CE loss on full embedding + weighted prefix Lp penalty with learned p.
+
+        Args:
+            embedding (torch.Tensor): Shape (batch_size, embed_dim).
+            labels    (torch.Tensor): Shape (batch_size,), class indices.
+            head      (nn.Module)   : SharedClassifier.
+
+        Returns:
+            torch.Tensor: Scalar loss = CE + lambda_l1 * weighted_lp.
+        """
+        ce_loss = self.ce(head(embedding), labels)
+
+        p = self.p  # differentiable scalar; gradients flow back to p_raw
+
+        # eps guards gradient against 0 * (-inf) when activations are zero
+        weighted_lp = (
+            self.dim_weights * (embedding.abs() + 1e-8).pow(p)
+        ).mean(dim=0).sum()
+
+        return ce_loss + self.lambda_l1 * weighted_lp
+
+
+# ==============================================================================
+# VectorLearnedPrefixLp loss — same as LearnedPrefixLpLoss but p is per-dimension
+# ==============================================================================
+
+class VectorLearnedPrefixLpLoss(nn.Module):
+    """
+    Cross-entropy loss with a Matryoshka-style weighted L_p penalty where each
+    embedding dimension has its own learned exponent p_j.
+
+    Parameterisation:
+        p_raw : nn.Parameter  shape (embed_dim,) — one unconstrained value per dim
+        p     = 1.0 + softplus(p_raw).clamp(max=p_max)   shape (embed_dim,)
+
+    This allows each dimension to independently adapt how aggressively it pushes
+    activations, beyond what the scalar case allows.
+
+    Forward:
+        penalty = (dim_weights * (|z| + eps).pow(p)).mean(dim=0).sum()
+
+    Broadcasting: (|z| + eps) has shape (batch, embed_dim); p has shape (embed_dim,).
+    PyTorch broadcasts correctly — no reshape needed.
+
+    Initialisation: all p_raw values start at p_init (default 0.0) so every
+    dimension begins at the same effective p ≈ 1.69.
+
+    Include loss_fn.parameters() in the optimiser so every p_raw[j] receives gradients:
+
+        opt = Adam(
+            list(encoder.parameters()) +
+            list(head.parameters()) +
+            list(loss_fn.parameters()),
+            lr=...,
+        )
+
+    Args:
+        embed_dim (int)  : Total embedding dimension d.
+        lambda_l1 (float): Regularisation strength. Default 0.05.
+        p_init    (float): Shared initial value for all p_raw[j]. Default 0.0.
+        p_max     (float): Per-dim clamp bound; p[j] ∈ (1.0, 1.0 + p_max].
+                           Default 10.0.
+    """
+
+    def __init__(self, embed_dim: int, lambda_l1: float = 0.05,
+                 p_init: float = 0.0, p_max: float = 10.0):
+        super().__init__()
+
+        self.ce        = nn.CrossEntropyLoss()
+        self.lambda_l1 = lambda_l1
+        self.p_max     = float(p_max)
+
+        # One unconstrained scalar per dimension
+        self.p_raw = nn.Parameter(
+            torch.full((embed_dim,), float(p_init))
+        )
+
+        # dim_weights[j] = embed_dim - j: dim 0 penalised most, dim d-1 least.
+        w = torch.arange(embed_dim, 0, -1, dtype=torch.float32)
+        self.register_buffer("dim_weights", w)
+
+        eff_p = 1.0 + float(F.softplus(torch.tensor(float(p_init))).clamp(max=p_max))
+        print(f"[VectorLearnedPrefixLpLoss] embed_dim={embed_dim}, lambda_l1={lambda_l1}, "
+              f"p_init(raw)={p_init}, p_init(eff)={eff_p:.3f} (all dims), p_max={p_max}")
+        print(f"  dim_weights (first 8): {w[:8].tolist()}")
+
+    @property
+    def p(self) -> torch.Tensor:
+        """Effective per-dim exponents — shape (embed_dim,), all > 1."""
+        return 1.0 + F.softplus(self.p_raw).clamp(max=self.p_max)
+
+    def forward(
+        self,
+        embedding: torch.Tensor,
+        labels: torch.Tensor,
+        head: nn.Module,
+    ) -> torch.Tensor:
+        """
+        Compute CE loss on full embedding + per-dim weighted prefix Lp penalty.
+
+        Args:
+            embedding (torch.Tensor): Shape (batch_size, embed_dim).
+            labels    (torch.Tensor): Shape (batch_size,), class indices.
+            head      (nn.Module)   : SharedClassifier.
+
+        Returns:
+            torch.Tensor: Scalar loss = CE + lambda_l1 * weighted_lp.
+        """
+        ce_loss = self.ce(head(embedding), labels)
+
+        p = self.p  # shape (embed_dim,); gradients flow back to each p_raw[j]
+
+        # (|z| + eps).pow(p): (batch, embed_dim) ^ (embed_dim,) — broadcasts correctly
+        weighted_lp = (
+            self.dim_weights * (embedding.abs() + 1e-8).pow(p)
+        ).mean(dim=0).sum()
+
+        return ce_loss + self.lambda_l1 * weighted_lp
+
+
+# ==============================================================================
 # Factory: build the right loss from config
 # ==============================================================================
 
@@ -323,7 +531,8 @@ def build_loss(cfg, model_type: str) -> nn.Module:
         cfg        (ExpConfig): Experiment config. Uses head_mode, eval_prefixes,
                                 embed_dim, l1_lambda.
         model_type (str)      : One of 'standard', 'matryoshka', 'l1',
-                                or 'prefix_l{p}' for any integer p >= 1.
+                                'prefix_l{p}' for any integer p >= 1, or
+                                'prefix_lp_learned' for LearnedPrefixLpLoss.
 
     Returns:
         nn.Module: The constructed loss instance.
@@ -358,11 +567,26 @@ def build_loss(cfg, model_type: str) -> nn.Module:
         )
         return PrefixLpLoss(embed_dim=cfg.embed_dim, lambda_l1=cfg.l1_lambda, p=p)
 
+    elif model_type == "prefix_lp_learned":
+        print(
+            f"[loss] Building LearnedPrefixLpLoss  "
+            f"(embed_dim={cfg.embed_dim}, lambda_l1={cfg.l1_lambda})"
+        )
+        return LearnedPrefixLpLoss(embed_dim=cfg.embed_dim, lambda_l1=cfg.l1_lambda)
+
+    elif model_type == "prefix_lp_vector_learned":
+        print(
+            f"[loss] Building VectorLearnedPrefixLpLoss  "
+            f"(embed_dim={cfg.embed_dim}, lambda_l1={cfg.l1_lambda})"
+        )
+        return VectorLearnedPrefixLpLoss(embed_dim=cfg.embed_dim, lambda_l1=cfg.l1_lambda)
+
     else:
         raise ValueError(
             f"Unknown model_type '{model_type}'. "
-            f"Choose 'standard', 'matryoshka', 'l1', or 'prefix_l{{p}}' "
-            f"(e.g. 'prefix_l1', 'prefix_l3', 'prefix_l4')."
+            f"Choose 'standard', 'matryoshka', 'l1', 'prefix_l{{p}}' "
+            f"(e.g. 'prefix_l1', 'prefix_l3'), 'prefix_lp_learned', "
+            f"or 'prefix_lp_vector_learned'."
         )
 
 

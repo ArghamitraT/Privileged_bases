@@ -43,6 +43,8 @@ Outputs (all in a new timestamped run folder):
   runtime.txt
   code_snapshot/
 
+Conda environment: mrl_env
+
 Usage:
     python experiments/exp9_dense_prefix.py --fast   # smoke test (digits, 5 epochs, 1 seed)
     python experiments/exp9_dense_prefix.py          # full run (MNIST, 20 epochs, 2 seeds)

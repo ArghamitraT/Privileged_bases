@@ -22,6 +22,8 @@ Expected results:
     - Mat diagonal correlation is higher than Standard (dimensions encode
       consistent information across runs).
 
+Conda environment: mrl_env
+
 Usage:
     python experiments/exp5_seed_stability.py
     python experiments/exp5_seed_stability.py --fast
