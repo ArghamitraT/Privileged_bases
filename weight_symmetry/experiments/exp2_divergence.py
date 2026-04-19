@@ -8,8 +8,13 @@ Same architecture, same training procedure, only the loss changes:
     Full-prefix MRL + MSE  →  encoder aligns with PCA subspace (variance-optimal)
     Full-prefix MRL + CE   →  encoder aligns with LDA subspace (classification-optimal)
 
+Data: ordered LDA synthetic dataset (data/synthetic_data/orderedLDA/).
+    Signal dims are ordered by discriminative power (dim 0 most discriminative).
+    This lets us measure whether MRL + CE recovers the LDA *ordering*, not just
+    the subspace — analogous to exp1 testing PCA ordering recovery.
+
 Models trained:
-    1. MSE LAE           — no ordering baseline (encoder directions arbitrary)
+    1. MSE LAE               — no ordering baseline (encoder directions arbitrary)
     2. Full-prefix MRL (MSE) — reconstruction task → expect PCA alignment
     3. Full-prefix MRL (CE)  — classification task → expect LDA alignment
     4. Standard MRL (CE)     — CE with M={...} prefixes → LDA but weaker
@@ -63,7 +68,7 @@ for _p in [_WS_ROOT, _CODE_ROOT]:
 from weight_symmetry.utility import (
     create_run_dir, save_runtime, save_code_snapshot, save_config
 )
-from weight_symmetry.data.loader import load_data
+from weight_symmetry.data.loader import load_data, load_data_with_directions
 from weight_symmetry.data.synthetic import load_synthetic
 from weight_symmetry.models.linear_ae import LinearAE
 from weight_symmetry.models.linear_ae_heads import LinearAEWithHeads
@@ -78,34 +83,55 @@ from weight_symmetry.evaluation.metrics import (
 # ==============================================================================
 # CONFIG
 # ==============================================================================
-DATASET        = "synthetic"
-EMBED_DIM      = 32
-EPOCHS         = 100
-PATIENCE       = 10
+DATASET        =  "synthetic"   # "synthetic"      → data/synthetic_data/{orderedLDA,nonOrderedLDA}/ (pre-generated)
+                                 # "20newsgroups"   → fetched + TF-IDF + TruncatedSVD, p=P_SVD
+                                 # "mnist_noise"    → MNIST PCA-projected + noise dims, p=P_PCA_PROJ+N_NOISE_DIMS
+                                 # "fashion_mnist_noise" → same as mnist_noise on Fashion-MNIST
+ORDERED_LDA    = False            # only used when DATASET == "synthetic":
+                                 #   True  → data/synthetic_data/orderedLDA/   (LDA dims ordered by disc. power)
+                                 #   False → data/synthetic_data/nonOrderedLDA/ (random class means)
+EMBED_DIM      = 50
+EPOCHS         = 500
+PATIENCE       = 50
 LR             = 1e-3
 BATCH_SIZE     = 256
 WEIGHT_DECAY   = 1e-4
-SEEDS          = [42, 43, 44, 45, 46]
-STANDARD_MRL_M = [4, 8, 16, 32]
+SEEDS          = [42]
+STANDARD_MRL_M = [5, 10, 25, 50]   # for d=50
+L1_LAMBDA      = 0.01               # PrefixL1 CE regularisation strength
+
+# Real-data parameters (used when DATASET != "synthetic")
+P_SVD              = 100    # 20newsgroups: TruncatedSVD output dim = model input_dim
+TFIDF_MAX_FEATURES = 10000  # 20newsgroups: TF-IDF vocabulary size
+P_PCA_PROJ         = 50     # mnist_noise / fashion_mnist_noise: PCA projection dim
+N_NOISE_DIMS       = 25     # mnist_noise / fashion_mnist_noise: prepended noise dims
+SIGMA_NOISE        = 5.0    # noise std (high-variance, class-agnostic)
 # ==============================================================================
 
 MODEL_CONFIGS = [
-    dict(tag="mse_lae",    loss="mse",          model_type="lae",
-         supervised=False, label="MSE LAE"),
-    dict(tag="fp_mrl_mse", loss="fullprefix",   model_type="lae",
-         supervised=False, label="Full-prefix MRL (MSE)"),
-    dict(tag="fp_mrl_ce",  loss="fullprefix_ce", model_type="lae_heads",
-         supervised=True,  label="Full-prefix MRL (CE)"),
-    dict(tag="std_mrl_ce", loss="standard_ce",  model_type="lae_heads",
-         supervised=True,  label="Standard MRL (CE)"),
+    dict(tag="mse_lae",       loss="mse",           model_type="lae",
+         supervised=False, label="MSE LAE",               flip_dims=False),
+    dict(tag="fp_mrl_mse",    loss="fullprefix",    model_type="lae",
+         supervised=False, label="Full-prefix MRL (MSE)", flip_dims=False),
+    dict(tag="fp_mrl_ce",     loss="fullprefix_ce", model_type="lae_heads",
+         supervised=True,  label="Full-prefix MRL (CE)",  flip_dims=False),
+    dict(tag="std_mrl_ce",    loss="standard_ce",   model_type="lae_heads",
+         supervised=True,  label="Standard MRL (CE)",     flip_dims=False),
+    dict(tag="prefix_l1_ce",  loss="prefix_l1_ce",  model_type="lae_heads",
+         supervised=True,  label="PrefixL1 (CE) (rev)",   flip_dims=True),
 ]
 
+# Tags for reconstruction-loss models — plotted on a secondary y-axis in training
+# curves because their MSE scale (~0.001–0.1) is much smaller than CE (~1–3).
+_MSE_TAGS = {"mse_lae", "fp_mrl_mse"}
+
 PLOT_STYLES = {
-    "MSE LAE":               dict(color="gray",   linestyle="--", marker=""),
-    "Full-prefix MRL (MSE)": dict(color="blue",   linestyle="-",  marker=""),
-    "Full-prefix MRL (CE)":  dict(color="green",  linestyle="-",  marker=""),
-    "Standard MRL (CE)":     dict(color="orange", linestyle="-",  marker="o", markersize=3),
-    "PCA + probe":           dict(color="black",  linestyle=":",  marker=""),
+    "MSE LAE":               dict(color="gray",    linestyle="--", marker=""),
+    "Full-prefix MRL (MSE)": dict(color="blue",    linestyle="-",  marker=""),
+    "Full-prefix MRL (CE)":  dict(color="green",   linestyle="-",  marker=""),
+    "Standard MRL (CE)":     dict(color="orange",  linestyle="-",  marker="o", markersize=3),
+    "PCA + probe":           dict(color="black",   linestyle=":",  marker=""),
+    "PrefixL1 (CE) (rev)":   dict(color="crimson", linestyle="-",  marker="^", markersize=3),
 }
 
 
@@ -114,7 +140,7 @@ PLOT_STYLES = {
 # ==============================================================================
 
 def build_loss_fn(loss_type: str, embed_dim: int, standard_mrl_m: list,
-                  n_classes: int):
+                  n_classes: int, l1_lambda: float = 0.01):
     if loss_type == "mse":
         return MSELoss()
     elif loss_type == "fullprefix":
@@ -123,6 +149,9 @@ def build_loss_fn(loss_type: str, embed_dim: int, standard_mrl_m: list,
         return FullPrefixCELoss()
     elif loss_type == "standard_ce":
         return StandardMRLCELoss(prefix_sizes=standard_mrl_m)
+    elif loss_type == "prefix_l1_ce":
+        from weight_symmetry.losses.losses import PrefixL1CELoss
+        return PrefixL1CELoss(l1_lambda=l1_lambda)
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
 
@@ -147,7 +176,8 @@ def train_all_models(data, cfg, run_dir, seed, standard_mrl_m, device):
             model = LinearAE(data.input_dim, cfg["embed_dim"]).to(device)
 
         torch.manual_seed(seed)
-        loss_fn = build_loss_fn(mc["loss"], cfg["embed_dim"], standard_mrl_m, n_classes)
+        loss_fn = build_loss_fn(mc["loss"], cfg["embed_dim"], standard_mrl_m, n_classes,
+                                l1_lambda=cfg.get("l1_lambda", L1_LAMBDA))
         opt     = torch.optim.Adam(
             model.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"]
         )
@@ -223,41 +253,50 @@ def compute_pca_probe_metrics(pca_dirs, lda_dirs, data, embed_dim):
 # ==============================================================================
 
 def plot_training_curves(all_histories, run_dir, fig_stamp):
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    """
+    Plot train/val loss curves.  MSE-based models (tiny loss scale) are drawn on
+    a secondary right y-axis so they remain visible alongside CE models (scale ~1–3).
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(14, 4))
 
-    for mc in MODEL_CONFIGS:
-        tag   = mc["tag"]
-        label = mc["label"]
-        style = PLOT_STYLES[label]
+    for ax, loss_key, title in [
+        (axes[0], "train_losses", "Train Loss"),
+        (axes[1], "val_losses",   "Val Loss"),
+    ]:
+        ax2 = ax.twinx()   # secondary axis for MSE-scale models
 
-        train_rows = [h["train_losses"] for h in all_histories[tag]]
-        val_rows   = [h["val_losses"]   for h in all_histories[tag]]
-        max_len    = max(len(r) for r in train_rows)
+        for mc in MODEL_CONFIGS:
+            tag   = mc["tag"]
+            label = mc["label"]
+            style = PLOT_STYLES[label]
 
-        def pad(rows):
-            return np.array([
+            rows    = [h[loss_key] for h in all_histories[tag]]
+            max_len = max(len(r) for r in rows)
+
+            mat    = np.array([
                 np.pad(r, (0, max_len - len(r)), constant_values=r[-1])
                 for r in rows
             ])
+            epochs = np.arange(1, max_len + 1)
+            mean   = mat.mean(0)
+            std    = mat.std(0)
 
-        train_mat = pad(train_rows)
-        val_mat   = pad(val_rows)
-        epochs    = np.arange(1, max_len + 1)
+            target = ax2 if tag in _MSE_TAGS else ax
+            target.plot(epochs, mean, label=label, **style)
+            target.fill_between(epochs, mean - std, mean + std,
+                                alpha=0.15, color=style["color"])
 
-        for ax, mat, title in [(axes[0], train_mat, "Train Loss"),
-                               (axes[1], val_mat,   "Val Loss")]:
-            mean = mat.mean(0)
-            std  = mat.std(0)
-            ax.plot(epochs, mean, label=label, **style)
-            ax.fill_between(epochs, mean - std, mean + std,
-                            alpha=0.15, color=style["color"])
-
-    for ax, title in zip(axes, ["Train Loss", "Val Loss"]):
         ax.set_xlabel("Epoch")
-        ax.set_ylabel("Loss")
+        ax.set_ylabel("CE / Combined Loss", color="black")
+        ax2.set_ylabel("MSE Loss", color="steelblue")
+        ax2.tick_params(axis="y", labelcolor="steelblue")
         ax.set_title(title)
-        ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
+
+        # Merge legends from both axes
+        lines1, lbls1 = ax.get_legend_handles_labels()
+        lines2, lbls2 = ax2.get_legend_handles_labels()
+        ax.legend(lines1 + lines2, lbls1 + lbls2, fontsize=8)
 
     plt.tight_layout()
     path = os.path.join(run_dir, f"training_curves{fig_stamp}.png")
@@ -488,7 +527,8 @@ def save_experiment_description(cfg, run_dir, standard_mrl_m, dataset_info):
         "  2. Full-prefix MRL (MSE)— reconstruction → expect PCA alignment",
         "  3. Full-prefix MRL (CE) — classification → expect LDA alignment",
         "  4. Standard MRL (CE)    — CE with M={} → LDA but weaker".format(standard_mrl_m),
-        "  5. PCA + probe          — theoretical baseline (angle to PCA = 0)",
+        "  5. PrefixL1 (CE) (rev) — CE + front-loaded L1; dims reversed before eval",
+        "  6. PCA + probe          — theoretical baseline (angle to PCA = 0)",
         "",
         "Metric: encoder rows B^T[:,1:k] compared to PCA/LDA subspaces",
         "",
@@ -523,34 +563,44 @@ def main():
     # ------------------------------------------------------------------
     # Config
     # ------------------------------------------------------------------
-    dataset       = args.dataset   or DATASET
-    embed_dim     = args.embed_dim or EMBED_DIM
-    epochs        = EPOCHS
-    patience      = PATIENCE
-    seeds         = SEEDS
+    dataset        = args.dataset   or DATASET
+    embed_dim      = args.embed_dim or EMBED_DIM
+    ordered_lda    = ORDERED_LDA
+    epochs         = EPOCHS
+    patience       = PATIENCE
+    seeds          = SEEDS
     standard_mrl_m = STANDARD_MRL_M
 
     if args.fast:
-        dataset        = args.dataset or "synthetic"
-        embed_dim      = args.embed_dim or 32
+        dataset        = args.dataset   or DATASET
+        # For synthetic use a small d; keep configured dim for real datasets
+        embed_dim      = args.embed_dim or (16 if dataset == "synthetic" else EMBED_DIM)
         epochs         = 5
         patience       = 3
         seeds          = [42]
-        standard_mrl_m = STANDARD_MRL_M
+        standard_mrl_m = [m for m in STANDARD_MRL_M if m <= embed_dim]
         print(f"[exp2] --fast mode: {dataset}, d={embed_dim}, 1 seed, {epochs} epochs")
 
     cfg = dict(
-        experiment_name = "exp2_divergence",
-        dataset         = dataset,
-        embed_dim       = embed_dim,
-        epochs          = epochs,
-        patience        = patience,
-        lr              = LR,
-        batch_size      = BATCH_SIZE,
-        weight_decay    = WEIGHT_DECAY,
-        seeds           = seeds,
-        standard_mrl_m  = standard_mrl_m,
-        fast            = args.fast,
+        experiment_name    = "exp2_divergence",
+        dataset            = dataset,
+        ordered_lda        = ordered_lda,
+        embed_dim          = embed_dim,
+        epochs             = epochs,
+        patience           = patience,
+        lr                 = LR,
+        batch_size         = BATCH_SIZE,
+        weight_decay       = WEIGHT_DECAY,
+        seeds              = seeds,
+        standard_mrl_m     = standard_mrl_m,
+        l1_lambda          = L1_LAMBDA,
+        fast               = args.fast,
+        # real-data params (ignored when dataset=="synthetic")
+        p_svd              = P_SVD,
+        tfidf_max_features = TFIDF_MAX_FEATURES,
+        p_pca_proj         = P_PCA_PROJ,
+        n_noise_dims       = N_NOISE_DIMS,
+        sigma_noise        = SIGMA_NOISE,
     )
 
     # ------------------------------------------------------------------
@@ -578,11 +628,44 @@ def main():
         standard_mrl_m = saved_cfg["standard_mrl_m"]
         seeds          = saved_cfg["seeds"]
         dataset        = saved_cfg["dataset"]
+        ordered_lda    = saved_cfg.get("ordered_lda", False)
 
-        data    = load_data(dataset, seed=seeds[0])
-        raw     = load_synthetic(seed=seeds[0]) if dataset == "synthetic" else None
-        pca_dirs = raw["pca_dirs"].astype(np.float64) if raw else None
-        lda_dirs = raw["lda_dirs"].astype(np.float64) if raw else None
+        if dataset == "synthetic":
+            data     = load_data(dataset, seed=seeds[0], ordered_lda=ordered_lda)
+            raw      = load_synthetic(seed=seeds[0], ordered_lda=ordered_lda)
+            pca_dirs = raw["pca_dirs"].astype(np.float64)
+            lda_dirs = raw["lda_dirs"].astype(np.float64)
+        else:
+            # Load saved directions (avoids re-fetching large datasets)
+            dir_path = os.path.join(weights_dir, "directions.npz")
+            if os.path.exists(dir_path):
+                d_npz    = np.load(dir_path)
+                pca_dirs = d_npz["pca_dirs"].astype(np.float64)
+                lda_dirs = d_npz["lda_dirs"].astype(np.float64)
+                print(f"[exp2] Loaded saved directions from {dir_path}")
+            else:
+                print(f"[exp2] directions.npz not found — re-fetching dataset ...")
+                p_svd_c   = saved_cfg.get("p_svd",              P_SVD)
+                tfidf_c   = saved_cfg.get("tfidf_max_features",  TFIDF_MAX_FEATURES)
+                p_pca_c   = saved_cfg.get("p_pca_proj",          P_PCA_PROJ)
+                n_noise_c = saved_cfg.get("n_noise_dims",        N_NOISE_DIMS)
+                sigma_c   = saved_cfg.get("sigma_noise",         SIGMA_NOISE)
+                _, pca_dirs, lda_dirs, _ = load_data_with_directions(
+                    dataset, seed=seeds[0],
+                    p_svd=p_svd_c, tfidf_max_features=tfidf_c,
+                    p_pca_proj=p_pca_c, n_noise_dims=n_noise_c, sigma_noise=sigma_c,
+                )
+            # Re-load first-seed data for PCA probe baseline
+            p_svd_c   = saved_cfg.get("p_svd",              P_SVD)
+            tfidf_c   = saved_cfg.get("tfidf_max_features",  TFIDF_MAX_FEATURES)
+            p_pca_c   = saved_cfg.get("p_pca_proj",          P_PCA_PROJ)
+            n_noise_c = saved_cfg.get("n_noise_dims",        N_NOISE_DIMS)
+            sigma_c   = saved_cfg.get("sigma_noise",         SIGMA_NOISE)
+            data, _, _, _ = load_data_with_directions(
+                dataset, seed=seeds[0],
+                p_svd=p_svd_c, tfidf_max_features=tfidf_c,
+                p_pca_proj=p_pca_c, n_noise_dims=n_noise_c, sigma_noise=sigma_c,
+            )
 
         histories_npz = np.load(os.path.join(weights_dir, "histories_raw.npz"))
         all_histories = {}
@@ -603,6 +686,7 @@ def main():
         for seed in seeds:
             for mc in MODEL_CONFIGS:
                 tag  = mc["tag"]
+                flip = mc["flip_dims"]
                 ckpt = os.path.join(weights_dir, f"seed{seed}_{tag}_best.pt")
                 if mc["model_type"] == "lae_heads":
                     model = LinearAEWithHeads(data.input_dim, embed_dim, data.n_classes)
@@ -610,9 +694,11 @@ def main():
                     model = LinearAE(data.input_dim, embed_dim)
                 model.load_state_dict(torch.load(ckpt, weights_only=True))
                 model.eval()
-                m = compute_encoder_subspace_metrics(model, pca_dirs, lda_dirs)
+                m = compute_encoder_subspace_metrics(model, pca_dirs, lda_dirs,
+                                                     flip_dims=flip)
                 all_metrics[tag].append(m)
-                a = compute_prefix_accuracy(model, data, device, mc["model_type"])
+                a = compute_prefix_accuracy(model, data, device, mc["model_type"],
+                                            flip_dims=flip)
                 all_accuracies[tag].append(a)
 
         pca_probe_metrics = compute_pca_probe_metrics(pca_dirs, lda_dirs, data, embed_dim)
@@ -645,21 +731,33 @@ def main():
     # ------------------------------------------------------------------
     # Load data + ground-truth directions
     # ------------------------------------------------------------------
-    print(f"\n[exp2] Loading {dataset} ...")
-    data = load_data(dataset, seed=seeds[0])
+    print(f"\n[exp2] Loading {dataset} (ordered_lda={ordered_lda}) ...")
 
     if dataset == "synthetic":
-        raw_data = load_synthetic(seed=seeds[0])
-        pca_dirs = raw_data["pca_dirs"].astype(np.float64)    # (p, p_noise)
-        lda_dirs = raw_data["lda_dirs"].astype(np.float64)    # (p, C-1)
+        data         = load_data(dataset, seed=seeds[0], ordered_lda=ordered_lda)
+        raw_data     = load_synthetic(seed=seeds[0], ordered_lda=ordered_lda)
+        pca_dirs     = raw_data["pca_dirs"].astype(np.float64)    # (p, p_noise)
+        lda_dirs     = raw_data["lda_dirs"].astype(np.float64)    # (p, C-1)
         dataset_info = {k: v for k, v in raw_data["params"].items()}
     else:
-        raise NotImplementedError(
-            f"Dataset '{dataset}' not yet supported in exp2. "
-            f"Add PCA/LDA direction computation for it."
+        data, pca_dirs, lda_dirs, dataset_info = load_data_with_directions(
+            dataset, seed=seeds[0],
+            p_svd=P_SVD, tfidf_max_features=TFIDF_MAX_FEATURES,
+            p_pca_proj=P_PCA_PROJ, n_noise_dims=N_NOISE_DIMS, sigma_noise=SIGMA_NOISE,
         )
+        # Ensure embed_dim does not exceed input_dim
+        if embed_dim > data.input_dim:
+            raise ValueError(
+                f"embed_dim={embed_dim} > input_dim={data.input_dim} for dataset '{dataset}'. "
+                f"Reduce EMBED_DIM in the CONFIG block."
+            )
 
     print(f"[exp2] pca_dirs: {pca_dirs.shape}  lda_dirs: {lda_dirs.shape}")
+
+    # Save directions for --use-weights reloading (avoids re-fetching dataset)
+    np.savez(os.path.join(run_dir, "directions.npz"),
+             pca_dirs=pca_dirs, lda_dirs=lda_dirs)
+
     save_experiment_description(cfg, run_dir, standard_mrl_m, dataset_info)
 
     # ------------------------------------------------------------------
@@ -674,25 +772,32 @@ def main():
         np.random.seed(seed)
         torch.manual_seed(seed)
 
-        seed_data    = load_data(dataset, seed=seed)
         if dataset == "synthetic":
-            seed_raw  = load_synthetic(seed=seed)
+            seed_data = load_data(dataset, seed=seed, ordered_lda=ordered_lda)
+            seed_raw  = load_synthetic(seed=seed, ordered_lda=ordered_lda)
             seed_pca  = seed_raw["pca_dirs"].astype(np.float64)
             seed_lda  = seed_raw["lda_dirs"].astype(np.float64)
         else:
-            seed_pca, seed_lda = pca_dirs, lda_dirs
+            seed_data, seed_pca, seed_lda, _ = load_data_with_directions(
+                dataset, seed=seed,
+                p_svd=P_SVD, tfidf_max_features=TFIDF_MAX_FEATURES,
+                p_pca_proj=P_PCA_PROJ, n_noise_dims=N_NOISE_DIMS, sigma_noise=SIGMA_NOISE,
+            )
 
         trained = train_all_models(seed_data, cfg, run_dir, seed, standard_mrl_m, device)
 
         for mc in MODEL_CONFIGS:
-            tag = mc["tag"]
+            tag       = mc["tag"]
+            flip      = mc["flip_dims"]
             model, history = trained[tag]
             all_histories[tag].append(history)
 
-            metrics = compute_encoder_subspace_metrics(model, seed_pca, seed_lda)
+            metrics = compute_encoder_subspace_metrics(model, seed_pca, seed_lda,
+                                                       flip_dims=flip)
             all_metrics[tag].append(metrics)
 
-            accs = compute_prefix_accuracy(model, seed_data, device, mc["model_type"])
+            accs = compute_prefix_accuracy(model, seed_data, device, mc["model_type"],
+                                           flip_dims=flip)
             all_accuracies[tag].append(accs)
 
             print(f"  [{tag}] PCA angle@k={embed_dim}: {metrics['pca_angles'][-1]:.1f}°  "

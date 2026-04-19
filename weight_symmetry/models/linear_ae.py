@@ -97,6 +97,22 @@ class LinearAE(nn.Module):
             signs[signs == 0] = 1.0
             self.decoder.weight.data = Q * signs.unsqueeze(0)
 
+    def orthogonalize_encoder(self):
+        """
+        Project encoder B onto row-orthonormal form via QR so that B B^T = I_d.
+        Equivalent to orthonormalizing the columns of B^T, then transposing back.
+        Call after every optimizer.step() when using the encoder orthogonality constraint.
+
+        Why: if the target is AB = UU^T with A = U (orthonormal columns), then the
+        optimal encoder is B = U^T, which has orthonormal rows (B B^T = U^T U = I_d).
+        """
+        with torch.no_grad():
+            W = self.encoder.weight.data       # (d, p)
+            Q, R = torch.linalg.qr(W.T)       # Q: (p, d), R: (d, d)  [QR on B^T]
+            signs = torch.sign(torch.diag(R))
+            signs[signs == 0] = 1.0
+            self.encoder.weight.data = (Q * signs.unsqueeze(0)).T  # back to (d, p)
+
     def get_decoder_matrix(self) -> torch.Tensor:
         """Return A = decoder.weight, shape (p, d). Detached numpy-ready."""
         return self.decoder.weight.detach()

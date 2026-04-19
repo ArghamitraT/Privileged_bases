@@ -67,7 +67,9 @@ def train_ae(
     run_dir: str,
     model_tag: str,
     orthogonalize: bool = False,
+    orthogonalize_encoder: bool = False,
     supervised: bool = False,
+    scheduler=None,
 ) -> Dict:
     """
     Train a LinearAE model.
@@ -81,15 +83,17 @@ def train_ae(
         cfg           : dict with keys: epochs, batch_size, patience, seed
         run_dir       : output directory for checkpoints and logs
         model_tag     : short string label for filenames/logs
-        orthogonalize : if True, call model.orthogonalize() after each step
-        supervised    : if True, pass labels to loss_fn (for CE losses)
+        orthogonalize         : if True, call model.orthogonalize() after each step (decoder A^T A = I)
+        orthogonalize_encoder : if True, call model.orthogonalize_encoder() after each step (encoder B B^T = I)
+        supervised            : if True, pass labels to loss_fn (for CE losses)
+        scheduler             : optional torch LR scheduler; stepped once per epoch after validation
 
     Returns:
         dict: train_losses, val_losses, best_epoch
     """
     logger = _setup_logger(run_dir, model_tag)
     device = next(model.parameters()).device
-    logger.info(f"=== Training: {model_tag}  ortho={orthogonalize}  device={device} ===")
+    logger.info(f"=== Training: {model_tag}  ortho={orthogonalize}  ortho_enc={orthogonalize_encoder}  device={device} ===")
     logger.info(f"  epochs={cfg['epochs']}  lr={cfg['lr']}  "
                 f"batch={cfg['batch_size']}  patience={cfg['patience']}")
 
@@ -141,6 +145,8 @@ def train_ae(
                 optimiser.step()
                 if orthogonalize:
                     model.orthogonalize()
+                if orthogonalize_encoder:
+                    model.orthogonalize_encoder()
                 epoch_train_loss += loss.item() * len(x_batch)
         else:
             for (x_batch,) in train_loader:
@@ -151,6 +157,8 @@ def train_ae(
                 optimiser.step()
                 if orthogonalize:
                     model.orthogonalize()
+                if orthogonalize_encoder:
+                    model.orthogonalize_encoder()
                 epoch_train_loss += loss.item() * len(x_batch)
         epoch_train_loss /= len(data.X_train)
         train_losses.append(epoch_train_loss)
@@ -190,6 +198,9 @@ def train_ae(
             torch.save(model.state_dict(), ckpt_path)
         else:
             epochs_no_improve += 1
+
+        if scheduler is not None:
+            scheduler.step()
 
         if cfg["patience"] and epochs_no_improve >= cfg["patience"]:
             logger.info(f"Early stopping at epoch {epoch+1}.")

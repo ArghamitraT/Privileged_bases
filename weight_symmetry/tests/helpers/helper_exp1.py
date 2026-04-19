@@ -59,12 +59,19 @@ def test_linear_ae():
     err = np.abs(A.T @ A - np.eye(d)).max()
     assert err < 1e-5, f"Init ortho err: {err}"
 
-    # Orthogonalize after corruption
+    # Orthogonalize decoder after corruption
     model.decoder.weight.data = torch.randn(p, d)
     model.orthogonalize()
     A   = model.get_decoder_matrix().numpy()
     err = np.abs(A.T @ A - np.eye(d)).max()
-    assert err < 1e-5, f"Post-ortho err: {err}"
+    assert err < 1e-5, f"Post-ortho (decoder) err: {err}"
+
+    # Orthogonalize encoder: rows should be orthonormal (B B^T = I_d)
+    model.encoder.weight.data = torch.randn(d, p)
+    model.orthogonalize_encoder()
+    B   = model.get_encoder_matrix().numpy()   # (d, p)
+    err = np.abs(B @ B.T - np.eye(d)).max()
+    assert err < 1e-5, f"Post-ortho (encoder) err: {err}"
 
     print(f"  {PASS}")
 
@@ -108,14 +115,28 @@ def test_trainer():
         assert len(h["train_losses"]) == 2
         assert h["best_epoch"] in [0, 1]
 
-        # With orthogonalize
+        # With decoder orthogonalize
         model2 = LinearAE(data.input_dim, 8)
         opt2   = torch.optim.Adam(model2.parameters(), lr=1e-3)
         h2     = train_ae(model2, FullPrefixMRLLoss(), opt2, data, cfg,
-                          run_dir, "test_fp_ortho", True)
+                          run_dir, "test_fp_dec_ortho",
+                          orthogonalize=True, orthogonalize_encoder=False)
         A  = model2.get_decoder_matrix().numpy()
         err = np.abs(A.T @ A - np.eye(8)).max()
-        assert err < 1e-4, f"Ortho not enforced after training: {err}"
+        assert err < 1e-4, f"Decoder ortho not enforced after training: {err}"
+
+        # With both encoder + decoder orthogonalize
+        model3 = LinearAE(data.input_dim, 8)
+        opt3   = torch.optim.Adam(model3.parameters(), lr=1e-3)
+        h3     = train_ae(model3, FullPrefixMRLLoss(), opt3, data, cfg,
+                          run_dir, "test_fp_both_ortho",
+                          orthogonalize=True, orthogonalize_encoder=True)
+        A3 = model3.get_decoder_matrix().numpy()
+        B3 = model3.get_encoder_matrix().numpy()
+        err_dec = np.abs(A3.T @ A3 - np.eye(8)).max()
+        err_enc = np.abs(B3 @ B3.T - np.eye(8)).max()
+        assert err_dec < 1e-4, f"Decoder ortho not enforced (both): {err_dec}"
+        assert err_enc < 1e-4, f"Encoder ortho not enforced (both): {err_enc}"
 
     print(f"  {PASS}")
 

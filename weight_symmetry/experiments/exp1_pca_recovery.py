@@ -11,7 +11,8 @@ Models trained (all with MSE reconstruction loss):
     2. MSE LAE + ortho   — A^T A = I (known PCA recovery result, upper baseline)
     3. Standard MRL      — prefix losses at M only (expect gaps at non-M sizes)
     4. Full-prefix MRL   — prefix losses at m=1..d, no constraint (Theorem 1 Part 1)
-    5. Full-prefix MRL + ortho — m=1..d with A^T A = I (Theorem 1 Part 2)
+    5. Full-prefix MRL + dec ortho  — m=1..d with A^T A = I (Theorem 1 Part 2)
+    6. Full-prefix MRL + both ortho — m=1..d with A^T A = I and B B^T = I (enc+dec)
 
 Metrics (per prefix m, averaged over seeds):
     - Mean principal angle (degrees) between A_{1:m} and top-m PCA subspace
@@ -72,38 +73,49 @@ from weight_symmetry.evaluation.metrics import (
 # ==============================================================================
 DATASET       = "fashion_mnist"          # "mnist" or "fashion_mnist"
 EMBED_DIM     = 32               # 16 or 32
-EPOCHS        = 100
-PATIENCE      = 10
+EPOCHS        = 500
+PATIENCE      = 50
+# Non-ortho models (Adam)
 LR            = 1e-3
-BATCH_SIZE    = 256
 WEIGHT_DECAY  = 1e-4
-SEEDS         = [42, 43, 44, 45, 46]              # [42, 43, 44, 45, 46]
+# Ortho models (SGD + cosine annealing, weight_decay=0 to avoid fighting QR projection)
+LR_ORTHO      = 0.05
+BATCH_SIZE    = 256
+SEEDS         = [42]              # [42, 43, 44, 45, 46]
 # Standard MRL prefix set — adjusted to EMBED_DIM
 STANDARD_MRL_M_32 = [4, 8, 16, 32]
 STANDARD_MRL_M_16 = [2, 4, 8, 16]
+
+# ------------------------------------------------------------------------------
+# EXPERIMENT NOTE — fill in manually to describe this run's motivation/changes
+# Printed at the top of experiment_description.log
+# ------------------------------------------------------------------------------
+EXPERIMENT_NOTE = "Trying to get 1 cos sim with PCA"
 # ==============================================================================
 
 
 MODEL_CONFIGS = [
-    dict(tag="mse_lae",            loss="mse",         ortho=False,
+    dict(tag="mse_lae",              loss="mse",          ortho=False, ortho_enc=False,
          label="MSE LAE"),
-    dict(tag="mse_lae_ortho",      loss="mse",         ortho=True,
+    dict(tag="mse_lae_ortho",        loss="mse",          ortho=True,  ortho_enc=False,
          label="MSE LAE + ortho"),
-    dict(tag="standard_mrl",       loss="standard_mrl", ortho=False,
+    dict(tag="standard_mrl",         loss="standard_mrl", ortho=False, ortho_enc=False,
          label="Standard MRL"),
-    dict(tag="fullprefix_mrl",     loss="fullprefix",   ortho=False,
+    dict(tag="fullprefix_mrl",       loss="fullprefix",   ortho=False, ortho_enc=False,
          label="Full-prefix MRL"),
-    dict(tag="fullprefix_mrl_ortho", loss="fullprefix", ortho=True,
-         label="Full-prefix MRL + ortho"),
+    dict(tag="fullprefix_mrl_ortho", loss="fullprefix",   ortho=True,  ortho_enc=False,
+         label="Full-prefix MRL + dec ortho"),
+    # dict(tag="fullprefix_mrl_both_ortho", loss="fullprefix", ortho=True, ortho_enc=True,
+    #      label="Full-prefix MRL + both ortho"),
 ]
 
-# Line styles for plots — consistent across figures
 PLOT_STYLES = {
-    "MSE LAE":                  dict(color="gray",   linestyle="--",  marker=""),
-    "MSE LAE + ortho":          dict(color="black",  linestyle="-",   marker=""),
-    "Standard MRL":             dict(color="orange", linestyle="-",   marker="o", markersize=3),
-    "Full-prefix MRL":          dict(color="blue",   linestyle="-",   marker=""),
-    "Full-prefix MRL + ortho":  dict(color="green",  linestyle="-",   marker=""),
+    "MSE LAE":                       dict(color="gray",   linestyle="--",  marker=""),
+    "MSE LAE + ortho":               dict(color="black",  linestyle="-",   marker=""),
+    "Standard MRL":                  dict(color="orange", linestyle="-",   marker="o", markersize=3),
+    "Full-prefix MRL":               dict(color="blue",   linestyle="-",   marker=""),
+    "Full-prefix MRL + dec ortho":   dict(color="green",  linestyle="-",   marker=""),
+    "Full-prefix MRL + both ortho":  dict(color="red",    linestyle="-",   marker=""),
 }
 
 
@@ -122,21 +134,38 @@ def build_loss_fn(loss_type: str, embed_dim: int, standard_mrl_m: list):
 
 def train_all_models(data, cfg: dict, run_dir: str, seed: int, standard_mrl_m: list,
                      device: torch.device):
-    """Train all 5 models for one seed. Returns dict: tag -> trained LinearAE."""
+    """Train all models for one seed. Returns dict: tag -> (model, history)."""
     models = {}
     for mc in MODEL_CONFIGS:
         tag   = mc["tag"]
         model = LinearAE(input_dim=data.input_dim, embed_dim=cfg["embed_dim"]).to(device)
         torch.manual_seed(seed)
         loss_fn = build_loss_fn(mc["loss"], cfg["embed_dim"], standard_mrl_m)
-        opt     = torch.optim.Adam(
-            model.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"]
-        )
+
+        is_ortho = mc["ortho"] or mc["ortho_enc"]
+        if is_ortho:
+            # SGD + momentum with no weight decay: avoids fighting the QR projection
+            # that enforces A^T A = I (weight decay would shrink columns toward 0)
+            opt = torch.optim.SGD(
+                model.parameters(), lr=cfg["lr_ortho"], momentum=0.9, weight_decay=0.0
+            )
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                opt, T_max=cfg["epochs"], eta_min=1e-5
+            )
+        else:
+            opt = torch.optim.Adam(
+                model.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"]
+            )
+            scheduler = None
+
         seed_cfg = dict(cfg)
         seed_cfg["seed"] = seed
         history = train_ae(
             model, loss_fn, opt, data, seed_cfg,
-            run_dir, f"seed{seed}_{tag}", mc["ortho"]
+            run_dir, f"seed{seed}_{tag}",
+            orthogonalize=mc["ortho"],
+            orthogonalize_encoder=mc["ortho_enc"],
+            scheduler=scheduler,
         )
         models[tag] = (model, history)
     return models
@@ -360,27 +389,40 @@ def save_results_summary(all_metrics, run_dir: str, embed_dim: int):
 
 
 def save_experiment_description(cfg: dict, run_dir: str, standard_mrl_m: list):
-    lines = [
-        "Experiment 1: PCA Subspace Recovery",
-        "=" * 60,
-        "",
-        "Purpose:",
-        "  Validate Theorem 1 (two-part PCA recovery result).",
-        "  Show full-prefix MRL recovers PCA subspaces at every m.",
-        "  Show standard MRL has gaps at non-evaluated prefix sizes.",
-        "  Show orthogonality additionally recovers individual eigenvectors.",
-        "",
-        "Models:",
-        "  1. MSE LAE           — baseline, no symmetry breaking",
-        "  2. MSE LAE + ortho   — known PCA recovery (upper baseline)",
-        "  3. Standard MRL      — prefix losses at M only",
-        "  4. Full-prefix MRL   — prefix losses at m=1..d (Theorem 1 Part 1)",
-        "  5. Full-prefix + ortho — same + A^T A = I (Theorem 1 Part 2)",
-        "",
-        f"Standard MRL M = {standard_mrl_m}",
-        "",
-        "Config:",
-    ] + [f"  {k}: {v}" for k, v in cfg.items()]
+    note = cfg.get("experiment_note", "").strip()
+    note_block = (
+        ["=" * 60, "EXPERIMENT NOTE:", f"  {note}", "=" * 60, ""]
+        if note else []
+    )
+    lines = (
+        ["Experiment 1: PCA Subspace Recovery", "=" * 60, ""]
+        + note_block
+        + [
+            "Purpose:",
+            "  Validate Theorem 1 (two-part PCA recovery result).",
+            "  Show full-prefix MRL recovers PCA subspaces at every m.",
+            "  Show standard MRL has gaps at non-evaluated prefix sizes.",
+            "  Show orthogonality additionally recovers individual eigenvectors.",
+            "",
+            "Optimizer:",
+            "  Non-ortho models : Adam (lr={lr}, weight_decay={wd})".format(
+                lr=cfg.get("lr"), wd=cfg.get("weight_decay")),
+            "  Ortho models     : SGD+momentum (lr={lr}, weight_decay=0) + CosineAnnealingLR".format(
+                lr=cfg.get("lr_ortho")),
+            "",
+            "Models:",
+            "  1. MSE LAE                — baseline, no symmetry breaking",
+            "  2. MSE LAE + ortho        — known PCA recovery (upper baseline)",
+            "  3. Standard MRL           — prefix losses at M only",
+            "  4. Full-prefix MRL        — prefix losses at m=1..d (Theorem 1 Part 1)",
+            "  5. Full-prefix + dec ortho — same + A^T A = I (Theorem 1 Part 2)",
+            "  6. Full-prefix + both ortho — same + A^T A = I and B B^T = I",
+            "",
+            f"Standard MRL M = {standard_mrl_m}",
+            "",
+            "Config:",
+        ] + [f"  {k}: {v}" for k, v in cfg.items()]
+    )
 
     path = os.path.join(run_dir, "experiment_description.log")
     with open(path, "w") as f:
@@ -475,10 +517,10 @@ def main():
     if args.fast:
         dataset   = args.dataset or "digits"
         embed_dim = args.embed_dim or 8
-        epochs    = 10
-        patience  = 5
+        epochs    = 30
+        patience  = 10
         seeds     = [42]
-        print("[exp1] --fast mode: digits, d=8, 1 seed, 10 epochs")
+        print("[exp1] --fast mode: digits, d=8, 1 seed, 30 epochs")
 
     # Derive standard MRL prefix set after embed_dim is finalised
     # Use evenly spaced prefixes that don't exceed embed_dim
@@ -494,17 +536,19 @@ def main():
             standard_mrl_m.append(embed_dim)
 
     cfg = dict(
-        experiment_name = "exp1_pca_recovery",
-        dataset         = dataset,
-        embed_dim       = embed_dim,
-        epochs          = epochs,
-        patience        = patience,
-        lr              = LR,
-        batch_size      = BATCH_SIZE,
-        weight_decay    = WEIGHT_DECAY,
-        seeds           = seeds,
-        standard_mrl_m  = standard_mrl_m,
-        fast            = args.fast,
+        experiment_name  = "exp1_pca_recovery",
+        dataset          = dataset,
+        embed_dim        = embed_dim,
+        epochs           = epochs,
+        patience         = patience,
+        lr               = LR,
+        lr_ortho         = LR_ORTHO,
+        batch_size       = BATCH_SIZE,
+        weight_decay     = WEIGHT_DECAY,
+        seeds            = seeds,
+        standard_mrl_m   = standard_mrl_m,
+        fast             = args.fast,
+        experiment_note  = EXPERIMENT_NOTE,
     )
 
     # ------------------------------------------------------------------

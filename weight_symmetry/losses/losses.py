@@ -138,6 +138,33 @@ class StandardMRLCELoss:
         return total / len(self.prefix_sizes)
 
 
+class PrefixL1CELoss:
+    """
+    CE on full embedding + front-loaded L1 penalty for dimension ordering.
+
+    Penalises dim j with weight (embed_dim - j): dim 0 is penalised most and
+    carries the least information after training.  Dimensions must be reversed
+    before prefix evaluation — label embeddings as "PrefixL1 (CE) (rev)".
+
+    Interface: loss_fn(x, model, y) — supervised, requires LinearAEWithHeads.
+
+    Args:
+        l1_lambda (float): L1 regularisation strength.
+    """
+    def __init__(self, l1_lambda: float = 0.01):
+        self.l1_lambda = l1_lambda
+
+    def __call__(self, x: torch.Tensor, model, y: torch.Tensor) -> torch.Tensor:
+        d      = model.embed_dim
+        z      = model.encode_prefix(x, d)          # (batch, d) full encoding
+        logits = model.heads[-1](z)                  # full-dim head (heads[d-1])
+        ce     = F.cross_entropy(logits, y)
+        # Weight for dim j = (d - j): dim 0 gets weight d, dim d-1 gets weight 1
+        weights = torch.arange(d, 0, -1, dtype=z.dtype, device=z.device)
+        l1_pen  = (weights * z.abs()).mean(dim=0).sum()
+        return ce + self.l1_lambda * l1_pen
+
+
 # ==============================================================================
 # Sanity check
 # ==============================================================================

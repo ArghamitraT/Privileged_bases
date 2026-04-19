@@ -150,6 +150,7 @@ def compute_encoder_subspace_metrics(
     model,
     pca_dirs: np.ndarray,
     lda_dirs: np.ndarray,
+    flip_dims: bool = False,
 ) -> Dict[str, list]:
     """
     For each prefix size k = 1..d, compute:
@@ -174,6 +175,10 @@ def compute_encoder_subspace_metrics(
     """
     d     = model.embed_dim
     B_T   = model.get_encoder_matrix().cpu().numpy().T.astype(np.float64)  # (p, d)
+    if flip_dims:
+        # Reverse column order so the most informative direction (last row of B)
+        # becomes column 0, matching PrefixL1's reversed-prefix convention.
+        B_T = np.ascontiguousarray(B_T[:, ::-1])
     n_lda = lda_dirs.shape[1]
 
     prefix_sizes = []
@@ -201,7 +206,8 @@ def compute_encoder_subspace_metrics(
     }
 
 
-def compute_prefix_accuracy(model, data, device, model_type: str = "lae") -> list:
+def compute_prefix_accuracy(model, data, device, model_type: str = "lae",
+                            flip_dims: bool = False) -> list:
     """
     For each prefix k = 1..d, compute test classification accuracy.
 
@@ -228,13 +234,26 @@ def compute_prefix_accuracy(model, data, device, model_type: str = "lae") -> lis
     accuracies = []
 
     with torch.no_grad():
-        if model_type == "lae_heads":
+        if model_type == "lae_heads" and not flip_dims:
             X_test = data.X_test.to(device)
             y_test = data.y_test.numpy()
             for k in range(1, d + 1):
                 logits = model.classify_prefix(X_test, k).cpu().numpy()
                 preds  = logits.argmax(axis=1)
                 accuracies.append(float((preds == y_test).mean()))
+        elif flip_dims:
+            # PrefixL1 (rev): extract full embedding, flip dims, logistic regression.
+            # Per-prefix heads are not trained under PrefixL1 so we skip them.
+            Z_tr = model.encode_prefix(data.X_train.to(device), d).cpu().numpy()
+            Z_te = model.encode_prefix(data.X_test.to(device), d).cpu().numpy()
+            Z_tr = np.ascontiguousarray(Z_tr[:, ::-1])
+            Z_te = np.ascontiguousarray(Z_te[:, ::-1])
+            y_tr = data.y_train.numpy()
+            y_te = data.y_test.numpy()
+            for k in range(1, d + 1):
+                clf = LogisticRegression(max_iter=200, n_jobs=1)
+                clf.fit(Z_tr[:, :k], y_tr)
+                accuracies.append(float(clf.score(Z_te[:, :k], y_te)))
         else:
             # Extract frozen embeddings for all prefix sizes at once
             X_tr = data.X_train.to(device)
