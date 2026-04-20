@@ -134,36 +134,229 @@ All figures go to:
 
 ## 4. Figure Specs
 
+### Fig 1 — Loss-Family Comparison: Cosine Similarity to PCA and LDA (NEW PLAN — 2026-04-20)
+
+**Script**: `weight_symmetry/scripts/plot_fig1_mse_pca_ce_lda.py`
+**Layout**: 2 rows × 3 columns, `figsize=(7.0, 5.0)`
+
+#### Step 0 — Prerequisite: Eigenvalue extraction script
+
+Before generating Fig 1, run:
+```
+python weight_symmetry/scripts/compute_eigenvalues.py
+```
+This loads the `orderedBoth` synthetic dataset (seed=42), computes PCA and LDA eigenvalues from `X_train`, and saves:
+```
+files/results/ICMLWorkshop_weightSymmetry2026/eigenvalues/
+    pca_eigenvalues.npy      # shape (50,) — raw PCA eigenvalues (variance), decreasing
+    lda_eigenvalues.npy      # shape (19,) — generalised LDA eigenvalues, decreasing
+    pca_eigenvalues_norm.npy # normalised by pca_eigenvalues[0]
+    lda_eigenvalues_norm.npy # normalised by lda_eigenvalues[0]
+```
+
+#### Panel grid
+
+| | Col 0: LAE (MSE loss) | Col 1: CE loss | Col 2: DeepLDA (Fisher loss) |
+|---|---|---|---|
+| **Row 0** | cos-sim to PCA + PCA eigenvalue bars (x ≤ 20) | cos-sim to PCA | cos-sim to PCA |
+| **Row 1** | cos-sim to LDA + LDA eigenvalue bars (x ≤ 5) | cos-sim to LDA | cos-sim to LDA |
+
+- All panels: left y-axis = "Max cosine similarity" [0, 1]
+- Col 0 only: right y-axis = "Normalised eigenvalue" (faded bars, secondary axis)
+- x-axis label: "Prefix size $k$"
+- x-axis range: row 0 → [0, 20]; row 1 → [0, 5] (data is clipped to these ranges at plot time)
+
+#### Data sources
+
+| Column | Source file |
+|--------|------------|
+| Col 0 (LAE) | `exprmnt_2026_04_19__16_00_49/exprmnt_2026_04_19__21_55_11/metrics_raw.npz` |
+| Col 1 (CE) | same file as Col 0 |
+| Col 2 (Fisher) | fisher: `exprmnt_2026_04_20__01_31_36`; fp_fisher: `exprmnt_2026_04_20__01_44_24`; std_mrl_fisher + prefix_l1_fisher: `exprmnt_2026_04_20__11_33_48` |
+
+**Pending Fisher models** (two jobs still running at plan time): `prefix_l1_fisher`, `std_mrl_fisher` — render as flat `NaN` dashed line with label "(pending)" until result folders are available.
+
+#### Models per column
+
+**Col 0 — LAE (MSE)**
+| Legend label | npz key prefix | Color | Style |
+|---|---|---|---|
+| LAE | `mse_lae` | `#888888` | `--` lw=1.0 |
+| MRL | `std_mrl_mse` | `#E07B00` | `-` lw=1.8 |
+| FP MRL | `fp_mrl_mse_ortho` | `#009E73` | `-` lw=1.8 |
+| PrefixL1 | `prefix_l1_mse` | `#D55E00` | `-.` lw=1.8 |
+| NonUniform L2 | `nonuniform_l2` | `#56B4E9` | `-` lw=1.8 |
+
+**Col 1 — CE**
+| Legend label | npz key prefix | Color | Style |
+|---|---|---|---|
+| Normal CE | `normal_ce` | `#888888` | `--` lw=1.0 |
+| MRL (CE) | `std_mrl_ce` | `#E07B00` | `-` lw=1.8 |
+| FP MRL (CE) | `fp_mrl_ce` | `#009E73` | `-` lw=1.8 |
+| PrefixL1 (CE) | `prefix_l1_ce` | `#D55E00` | `-.` lw=1.8 |
+
+**Col 2 — DeepLDA (Fisher)**
+| Legend label | npz key prefix | Color | Style |
+|---|---|---|---|
+| Fisher | `fisher` | `#888888` | `--` lw=1.0 |
+| MRL Fisher | `std_mrl_fisher` | `#E07B00` | `-` lw=1.8 |
+| FP MRL Fisher | `fp_fisher` | `#009E73` | `-` lw=1.8 |
+| PrefixL1 Fisher | `prefix_l1_fisher` | `#D55E00` | `-.` lw=1.8 |
+
+#### Bar overlays (col 0 only)
+| Row | Eigenvalue file | Color | Alpha |
+|-----|----------------|-------|-------|
+| Row 0 | `pca_eigenvalues_norm.npy` | `#89C4E1` (faded blue) | 0.35 |
+| Row 1 | `lda_eigenvalues_norm.npy` | `#89C4E1` (faded blue) | 0.35 |
+
+#### Legend placement
+- Each panel has its own legend (upper-right), font size 7pt.
+- Legend only shows models that have real data (omit flat-NaN pending lines from legend, or append "(pending)" as grey italic).
+
+#### Row / column titles
+- Row titles (left margin, rotated): "Cosine sim. to PCA" (row 0), "Cosine sim. to LDA" (row 1)
+- Column titles (top): "MSE models", "CE models", "Fisher models"
+
+---
+
 ### Fig 2 — PCA Recovery (Exp 1)
 
 **Script**: `weight_symmetry/scripts/plot_fig2_col_alignment.py`  
 **Layout**: 2 panels, 1 row, `figsize=(6.5, 3.0)` — fits one paper column
 
-**Panel 1 (left) — Cosine similarity + eigenvalue spectrum**
-- Left y-axis: "Cosine similarity" (mean max cosine similarity, higher = better)
+**Panel 1 (left) — Column alignment to PCA**
+- Title: "Column alignment to PCA"
+- Left y-axis: "Max cosine similarity" — max cosine of each decoder column to any PCA eigenvector
 - Right y-axis: "Normalised eigenvalue" — light blue bars (`#89C4E1`, alpha=0.35, zorder=0)
-- x-axis: "Prefix size $m$"
+- x-axis: "Prefix size $m$", starts at 0
+- Extra line: FP MRL pairwise cosine (`fullprefix_mrl_ortho_paired_cosines`), `#009E73` dashed, lw=1.4
+- No legend on this panel (legend lives on right panel)
 
-**Panel 2 (right) — Principal angle + eigenvalue gap**
-- Left y-axis: "Principal angle (°)" (mean principal angle, lower = better)
+**Panel 2 (right) — Subspace angle to PCA**
+- Title: "Subspace angle to PCA"
+- Left y-axis: "Mean principal angle (°)" — mean over canonical angles, lower = better
 - Right y-axis: "Normalised eigenvalue gap" — purple bars (`#9B59B6`, alpha=0.30, zorder=0)
-  - Cap y-axis at 0.12 (dims 2–3 have large gaps ~0.35–0.40 that are real but compress the scale)
-  - Shade 4 smallest-gap dims with faint purple strip (`alpha=0.08`)
+  - y-axis capped at `gaps_norm.max() * 1.05` (data-driven, not hardcoded)
+- x-axis: "Prefix size $m$", starts at 0, ends at embed_dim
+- y-axis top: `max angle across all models * 1.05`
 
-**Models (3 only)**
-| Legend label | Data key | Color | Style |
-|---|---|---|---|
-| LAE | `mse_lae` | `#888888` | `--` |
-| MRL | `standard_mrl` | `#E07B00` | `-` |
-| Full prefix MRL | `fullprefix_mrl_ortho` | `#009E73` | `-` |
+**Models (3 + 1 extra line)**
+| Legend label | Data key | Color | Style | Panel |
+|---|---|---|---|---|
+| LAE | `mse_lae` | `#888888` | `--` | right legend |
+| MRL | `standard_mrl` | `#E07B00` | `-` | right legend |
+| FP MRL | `fullprefix_mrl_ortho` | `#009E73` | `-` | right legend |
+| FP MRL (pairwise sim.) | `fullprefix_mrl_ortho_paired_cosines` | `#009E73` | `--` lw=1.4 | right legend (custom handle) |
 
-**Legend**: upper-right of Panel 2 (principal angle panel)  
-**No panel titles** — caption in LaTeX
+**Legend**: upper-right of Panel 2 only — includes custom handle for pairwise sim. line from left panel
 
 **Caption (draft)**:
 > **Figure 2.** PCA recovery across prefix sizes for three models on Fashion-MNIST (d=32).
-> *(Left)* Mean max cosine similarity between decoder columns and PCA eigenvectors (higher = better), overlaid with the eigenvalue spectrum (blue bars, right axis).
-> *(Right)* Mean principal angle between the learned prefix subspace and the PCA subspace (lower = better), overlaid with the normalised eigenvalue gap (purple bars, right axis, capped at 0.12). Full prefix MRL achieves near-perfect subspace and eigenvector recovery at all scales.
+> *(Left)* Max cosine similarity between decoder columns and PCA eigenvectors (solid lines), with pairwise cosine for FP MRL (dashed green), overlaid with the eigenvalue spectrum (blue bars, right axis).
+> *(Right)* Mean principal angle between the learned prefix subspace and the PCA subspace (lower = better), overlaid with the normalised eigenvalue gap (purple bars, right axis). FP MRL achieves near-perfect subspace and eigenvector recovery at all scales.
+
+---
+
+### Fig A1 — Appendix: Cluster Visualization + Classification Accuracy (CE Models)
+
+**Script**: `weight_symmetry/scripts/plot_figA1_cluster_accuracy_ce.py`
+**Layout**: 4 rows × 4 columns, `figsize=(7.5, 8.5)`
+
+#### Overview
+
+For each of 4 CE-family models × 3 prefix sizes $k \in \{2, 4, 8\}$, show a t-SNE scatter of test embeddings colored by class, with the linear-probe accuracy printed as the panel subtitle.
+
+#### Data source
+
+- Dataset: `orderedBoth` synthetic, seed=42 — use `X_test` / `y_test` (2,000 points, 20 classes)
+- Model weights: `exprmnt_2026_04_19__16_00_49/seed42_<tag>_best.pt`
+- Embed dim: 50; slice first $k$ dims for each model (reverse for PrefixL1 before slicing)
+
+#### Panel grid
+
+| | Col 0: Normal CE | Col 1: MRL (CE) | Col 2: FP MRL (CE) | Col 3: PrefixL1 (CE) |
+|---|---|---|---|---|
+| **Row 0** $k=2$  | t-SNE 2-D | t-SNE 2-D | t-SNE 2-D | t-SNE 2-D |
+| **Row 1** $k=4$  | t-SNE 2-D | t-SNE 2-D | t-SNE 2-D | t-SNE 2-D |
+| **Row 2** $k=8$  | t-SNE 2-D | t-SNE 2-D | t-SNE 2-D | t-SNE 2-D |
+| **Row 3** $k=16$ | t-SNE 2-D | t-SNE 2-D | t-SNE 2-D | t-SNE 2-D |
+
+- **Panel title** (top, 8 pt): column header on row 0 only (e.g. "Normal CE")
+- **Panel subtitle** (below each scatter, 7 pt italic): `Lin. acc: XX.X%`
+- **Row label** (left margin, rotated, 8 pt): "$k = 2$", "$k = 4$", "$k = 8$"
+- **Point colors**: `tab20` colormap, one color per class (20 classes), marker size 2, alpha 0.5
+- No axis ticks or labels on any panel (t-SNE axes are not interpretable)
+- No per-panel legend (20 classes → too cluttered); add a single shared colorbar/legend strip at the bottom if space allows, otherwise omit
+
+#### Model tags (weight file → npz key mapping)
+
+| Column | Weight file tag | npz key prefix |
+|---|---|---|
+| Normal CE | `normal_ce` | `normal_ce` |
+| MRL (CE) | `std_mrl_ce` | `std_mrl_ce` |
+| FP MRL (CE) | `fp_mrl_ce` | `fp_mrl_ce` |
+| PrefixL1 (CE) | `prefix_l1_ce` | `prefix_l1_ce` (**reverse dims** before slicing) |
+
+#### t-SNE parameters
+
+```python
+from sklearn.manifold import TSNE
+tsne = TSNE(n_components=2, perplexity=30, n_iter=1000, random_state=42)
+```
+
+Run t-SNE independently for each (model, $k$) combination.
+
+#### Accuracy computation
+
+```python
+from sklearn.linear_model import LogisticRegression
+clf = LogisticRegression(max_iter=1000, random_state=42)
+clf.fit(Z_train[:, :k], y_train)   # use training embeddings for fitting
+acc = clf.score(Z_test[:, :k], y_test)
+```
+
+Train split embeddings are also extracted (pass `X_train` through each encoder).
+
+#### Saving
+
+- Output dir: `ICMLWorkshop_weightSymmetry2026/figures/`
+- Stem: `figA1_cluster_ce_{fig_stamp}`
+- Formats: `.pdf`, `.png`, `.svg`
+
+---
+
+### Fig A1B — Appendix: Cluster Visualization + Classification Accuracy (Fisher Models)
+
+**Script**: `weight_symmetry/scripts/plot_figA1_cluster_accuracy_fisher.py`
+**Layout**: 4 rows × 4 columns, `figsize=(7.5, 8.5)`
+
+Same structure as Fig A1 (CE) but for Fisher/LDA models.
+
+#### Key differences from Fig A1
+
+| Property | CE (A1) | Fisher (A1B) |
+|---|---|---|
+| Model arch | `LinearAEWithHeads` | `LinearAE` (no heads) |
+| embed_dim | 50 | 19 (= n_lda = C−1) |
+| Seed | 42 | 47 |
+| flip_dims | `prefix_l1_ce` | `prefix_l1_fisher` |
+
+#### Models (columns)
+
+| Column | Tag | Weight folder | File |
+|---|---|---|---|
+| Fisher | `fisher` | `exprmnt_2026_04_20__01_31_36` | `seed47_fisher_best.pt` |
+| FP Fisher | `fp_fisher` | `exprmnt_2026_04_20__01_44_24` | `seed47_fp_fisher_best.pt` |
+| MRL Fisher | `std_mrl_fisher` | `exprmnt_2026_04_20__11_33_48` | `seed47_std_mrl_fisher_best.pt` |
+| PrefixL1 Fisher | `prefix_l1_fisher` | `exprmnt_2026_04_20__11_33_48` | `seed47_prefix_l1_fisher_best.pt` |
+
+#### Rows: $k \in \{2, 4, 8, 16\}$
+
+#### Saving
+
+- Output dir: `ICMLWorkshop_weightSymmetry2026/figures/`
+- Stem: `figA1B_cluster_fisher_{fig_stamp}`
+- Formats: `.pdf`, `.png`, `.svg`
 
 ---
 
@@ -173,7 +366,10 @@ Tracks every paper figure: source experiment, run folder, and generated file. Up
 
 | Paper Fig | Description | Experiment | Source Run Folder | Generated File (stem) | Date Generated |
 |-----------|-------------|------------|-------------------|-----------------------|----------------|
-| Fig 2 | Cosine similarity (left) + principal angle (right), dual-axis | Exp 1 — PCA Subspace Recovery | `exprmnt_2026_04_16__20_54_49` | `exp1_pca_recovery_2026_04_19__14_19_37` | 2026-04-19 |
+| Fig 1 | 2×3 cosine-sim grid: PCA row + LDA row × MSE/CE/Fisher cols | Exp 2 divergence (LAE/CE) + Exp 2 Fisher | LAE/CE: `exprmnt_2026_04_19__16_00_49/exprmnt_2026_04_20__13_46_30`; Fisher: `exprmnt_2026_04_20__01_31_36` | `fig1_cosine_pca_lda_grid_2026_04_20__13_49_06` | 2026-04-20 |
+| Fig 2 | Max cosine (left, + pairwise dashed) + mean principal angle (right), dual-axis | Exp 1 — PCA Subspace Recovery | `exprmnt_2026_04_16__20_54_49/exprmnt_2026_04_19__21_36_49` | `exp1_pca_recovery_2026_04_19__23_21_01` | 2026-04-19 |
+| Fig A1 | 4×4 t-SNE cluster grid, CE models, k=2,4,8,16 | Exp 2 divergence (CE) | `exprmnt_2026_04_19__16_00_49` | `figA1_cluster_ce_2026_04_20__16_02_43` | 2026-04-20 |
+| Fig A1B | 4×4 t-SNE cluster grid, Fisher models, k=2,4,8,16 | Exp 2 Fisher | `01_31_36` (fisher), `01_44_24` (fp_fisher), `11_33_48` (mrl+l1) | `figA1B_cluster_fisher_2026_04_20__16_19_44` | 2026-04-20 |
 
 ---
 

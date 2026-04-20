@@ -65,16 +65,18 @@ from weight_symmetry.losses.losses import (
 )
 from weight_symmetry.training.trainer import train_ae
 from weight_symmetry.evaluation.metrics import (
-    compute_pca_directions, compute_all_prefix_metrics
+    compute_pca_dirs_and_eigenvalues, compute_all_prefix_metrics
 )
 
 # ==============================================================================
 # CONFIG — edit here for full runs; --fast overrides below in main()
 # ==============================================================================
-DATASET       = "fashion_mnist"          # "mnist" or "fashion_mnist"
+DATASET       = "mnist"          # "mnist" or "fashion_mnist"
 EMBED_DIM     = 32               # 16 or 32
-EPOCHS        = 500
-PATIENCE      = 50
+EPOCHS        = 5000
+PATIENCE      = 500
+# EPOCHS        = 50
+# PATIENCE      = 5
 # Non-ortho models (Adam)
 LR            = 1e-3
 WEIGHT_DECAY  = 1e-4
@@ -90,19 +92,19 @@ STANDARD_MRL_M_16 = [2, 4, 8, 16]
 # EXPERIMENT NOTE — fill in manually to describe this run's motivation/changes
 # Printed at the top of experiment_description.log
 # ------------------------------------------------------------------------------
-EXPERIMENT_NOTE = "Trying to get 1 cos sim with PCA"
+EXPERIMENT_NOTE = "Increased to 10k epochs (patience 500) to improve PCA recovery on MNIST — previous 500-epoch run showed degraded column alignment at larger prefix sizes due to near-degenerate eigenvalues."
 # ==============================================================================
 
 
 MODEL_CONFIGS = [
     dict(tag="mse_lae",              loss="mse",          ortho=False, ortho_enc=False,
          label="MSE LAE"),
-    dict(tag="mse_lae_ortho",        loss="mse",          ortho=True,  ortho_enc=False,
-         label="MSE LAE + ortho"),
+    # dict(tag="mse_lae_ortho",        loss="mse",          ortho=True,  ortho_enc=False,
+    #      label="MSE LAE + ortho"),
     dict(tag="standard_mrl",         loss="standard_mrl", ortho=False, ortho_enc=False,
          label="Standard MRL"),
-    dict(tag="fullprefix_mrl",       loss="fullprefix",   ortho=False, ortho_enc=False,
-         label="Full-prefix MRL"),
+    # dict(tag="fullprefix_mrl",       loss="fullprefix",   ortho=False, ortho_enc=False,
+    #      label="Full-prefix MRL"),
     dict(tag="fullprefix_mrl_ortho", loss="fullprefix",   ortho=True,  ortho_enc=False,
          label="Full-prefix MRL + dec ortho"),
     # dict(tag="fullprefix_mrl_both_ortho", loss="fullprefix", ortho=True, ortho_enc=True,
@@ -300,6 +302,76 @@ def plot_prefix_metrics(all_metrics, run_dir: str, fig_stamp: str, embed_dim: in
     print(f"[exp1] Saved {align_path}")
 
 
+def plot_paired_cosines(all_metrics, run_dir: str, fig_stamp: str, embed_dim: int,
+                        standard_mrl_m: list):
+    """
+    Paired cosine: |b_k · u_k| for each k individually.
+    Tests whether encoder dim k aligns with exactly PCA eigenvector k (ordering).
+    """
+    prefix_sizes = list(range(1, embed_dim + 1))
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    for mc in MODEL_CONFIGS:
+        tag   = mc["tag"]
+        label = mc["label"]
+        style = PLOT_STYLES[label]
+
+        pc_mat = np.array([all_metrics[tag][s]["paired_cosines"]
+                           for s in range(len(all_metrics[tag]))])
+        mean = pc_mat.mean(0)
+        std  = pc_mat.std(0)
+        ax.plot(prefix_sizes, mean, label=label, **style)
+        ax.fill_between(prefix_sizes, mean - std, mean + std,
+                        alpha=0.15, color=style["color"])
+
+    for m in standard_mrl_m:
+        ax.axvline(x=m, color="orange", linestyle=":", alpha=0.5, linewidth=0.8)
+
+    ax.set_xlabel("Dimension k")
+    ax.set_ylabel("|cos(b_k, u_k)|")
+    ax.set_title(
+        "Ordered PCA recovery: paired cosine |cos(b_k, u_k)| per dimension\n"
+        "b_k = encoder dim k vs u_k = PCA eigenvector k  [tests ordering, not span]\n"
+        "cf. 'column alignment' which takes max over top-k set — this is strictly paired"
+    )
+    ax.set_ylim(0, 1.05)
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+
+    path = os.path.join(run_dir, f"ordered_pca_recovery_paired_cosine{fig_stamp}.png")
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"[exp1] Saved {path}")
+
+
+def save_pca_eigenvalues(eigenvalues: np.ndarray, run_dir: str):
+    """
+    Save PCA eigenvalues in three formats:
+      pca_eigenvalues.npy       — raw variance per direction (s²/(n-1))
+      pca_eigenvalues_norm.npy  — normalised so index-0 = 1.0
+      eigenvalue_gaps.txt       — format read by plot_fig2_col_alignment.py
+    """
+    eigs_norm = eigenvalues / eigenvalues[0]
+    # gap at position k = (lambda_k - lambda_{k+1}) / lambda_1 (positive, decreasing sequence)
+    # last position has no successor → gap = 0
+    gaps = eigenvalues[:-1] - eigenvalues[1:]          # (d-1,), positive
+    gaps_norm = np.concatenate([gaps / eigenvalues[0], [0.0]])  # (d,)
+
+    np.save(os.path.join(run_dir, "pca_eigenvalues.npy"),      eigenvalues)
+    np.save(os.path.join(run_dir, "pca_eigenvalues_norm.npy"), eigs_norm)
+
+    lines = ["# idx  eigenvalue  norm_eigenvalue  norm_gap"]
+    for i, (lam, lam_n, gn) in enumerate(zip(eigenvalues, eigs_norm, gaps_norm)):
+        gn_str = "nan" if np.isnan(gn) else f"{gn:.8f}"
+        lines.append(f"{i}  {lam:.8f}  {lam_n:.8f}  {gn_str}")
+    with open(os.path.join(run_dir, "eigenvalue_gaps.txt"), "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+    print(f"[exp1] Saved pca_eigenvalues.npy, pca_eigenvalues_norm.npy, eigenvalue_gaps.txt")
+
+
 def save_raw_data(all_metrics, all_histories, pca_dirs, run_dir: str):
     """
     Save all raw numerical data to disk so plots can be reproduced without re-training.
@@ -320,6 +392,9 @@ def save_raw_data(all_metrics, all_histories, pca_dirs, run_dir: str):
         )
         metrics_dict[f"{tag}_column_alignments"] = np.array(
             [m["column_alignments"] for m in all_metrics[tag]]
+        )
+        metrics_dict[f"{tag}_paired_cosines"] = np.array(
+            [m["paired_cosines"]    for m in all_metrics[tag]]
         )
         metrics_dict[f"{tag}_prefix_sizes"] = np.array(
             all_metrics[tag][0]["prefix_sizes"]
@@ -465,11 +540,13 @@ def load_raw_data(weights_dir: str):
         align_mat = metrics_npz[f"{tag}_column_alignments"]  # (n_seeds, d)
         prefix_sizes = metrics_npz[f"{tag}_prefix_sizes"].tolist()
 
+        pc_mat = metrics_npz[f"{tag}_paired_cosines"]  # (n_seeds, d)
         all_metrics[tag] = [
             {
                 "prefix_sizes":      prefix_sizes,
                 "subspace_angles":   ang_mat[s].tolist(),
                 "column_alignments": align_mat[s].tolist(),
+                "paired_cosines":    pc_mat[s].tolist(),
             }
             for s in range(n_seeds)
         ]
@@ -574,6 +651,11 @@ def main():
         pca_dirs      = np.load(os.path.join(weights_dir, "pca_directions.npy"))
         histories_npz = np.load(os.path.join(weights_dir, "histories_raw.npz"))
 
+        # Recompute eigenvalues — need training data for this
+        print(f"[exp1] Loading {saved_cfg['dataset']} to compute PCA eigenvalues ...")
+        data_for_eigs = load_data(saved_cfg["dataset"], seed=saved_cfg["seeds"][0])
+        _, pca_eigenvalues = compute_pca_dirs_and_eigenvalues(data_for_eigs.X_train, embed_dim)
+
         all_histories = {}
         for mc in MODEL_CONFIGS:
             tag = mc["tag"]
@@ -595,7 +677,7 @@ def main():
                 tag   = mc["tag"]
                 ckpt  = os.path.join(weights_dir, f"seed{seed}_{tag}_best.pt")
                 model = LinearAE(input_dim=pca_dirs.shape[0], embed_dim=embed_dim)
-                model.load_state_dict(torch.load(ckpt, weights_only=True))
+                model.load_state_dict(torch.load(ckpt, weights_only=True, map_location="cpu"))
                 model.eval()
                 metrics = compute_all_prefix_metrics(model, pca_dirs)
                 all_metrics[tag].append(metrics)
@@ -609,10 +691,13 @@ def main():
         fig_stamp = time.strftime("_%Y_%m_%d__%H_%M_%S")
 
         save_raw_data(all_metrics, all_histories, pca_dirs, run_dir)
+        save_pca_eigenvalues(pca_eigenvalues, run_dir)
+        save_experiment_description(saved_cfg, run_dir, standard_mrl_m)
 
         print("\n[exp1] Generating plots ...")
         plot_training_curves(all_histories, run_dir, fig_stamp)
         plot_prefix_metrics(all_metrics, run_dir, fig_stamp, embed_dim, standard_mrl_m)
+        plot_paired_cosines(all_metrics, run_dir, fig_stamp, embed_dim, standard_mrl_m)
         save_results_summary(all_metrics, run_dir, embed_dim)
 
         elapsed = time.time() - t_start
@@ -647,8 +732,8 @@ def main():
     # ------------------------------------------------------------------
     # Ground-truth PCA directions (from training data)
     # ------------------------------------------------------------------
-    print(f"[exp1] Computing top-{embed_dim} PCA directions ...")
-    pca_dirs = compute_pca_directions(data.X_train, embed_dim)
+    print(f"[exp1] Computing top-{embed_dim} PCA directions and eigenvalues ...")
+    pca_dirs, pca_eigenvalues = compute_pca_dirs_and_eigenvalues(data.X_train, embed_dim)
     print(f"[exp1] PCA directions shape: {pca_dirs.shape}")
 
     # ------------------------------------------------------------------
@@ -684,6 +769,7 @@ def main():
     # Save raw data (metrics + histories + PCA dirs) for re-plotting
     # ------------------------------------------------------------------
     save_raw_data(all_metrics, all_histories, pca_dirs, run_dir)
+    save_pca_eigenvalues(pca_eigenvalues, run_dir)
 
     # ------------------------------------------------------------------
     # Plots
@@ -691,6 +777,7 @@ def main():
     print("\n[exp1] Generating plots ...")
     plot_training_curves(all_histories, run_dir, fig_stamp)
     plot_prefix_metrics(all_metrics, run_dir, fig_stamp, embed_dim, standard_mrl_m)
+    plot_paired_cosines(all_metrics, run_dir, fig_stamp, embed_dim, standard_mrl_m)
 
     # ------------------------------------------------------------------
     # Results summary

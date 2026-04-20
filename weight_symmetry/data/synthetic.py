@@ -80,6 +80,7 @@ for _p in [_WS_ROOT, _CODE_ROOT]:
 
 DATA_DIR      = os.path.join(_PROJ_ROOT, "data", "synthetic_data", "nonOrderedLDA")
 DATA_DIR_OLDA = os.path.join(_PROJ_ROOT, "data", "synthetic_data", "orderedLDA")
+DATA_DIR_NSD  = os.path.join(_PROJ_ROOT, "data", "synthetic_data", "orderedBoth")
 
 # ==============================================================================
 # Default parameters
@@ -92,23 +93,34 @@ CLASS_SEP       = 1.0         # scale of class means (distance from origin)
 N_PER_CLASS     = 500         # samples per class  →  n_total = 10 000
 TEST_SIZE       = 0.2
 VAL_SIZE        = 0.1
-ORDERED_LDA     = False       # if True, signal dims are ordered by discriminative power
-LDA_SCALE_DECAY = 0.7         # geometric decay rate for ordered LDA (ignored otherwise)
+ORDERED_LDA       = False     # if True, signal dims are ordered by discriminative power
+LDA_SCALE_DECAY   = 0.7       # geometric decay rate for ordered LDA (ignored otherwise)
+NOISE_SCALE_DECAY = 1.0       # <1 gives geometrically decaying noise variances
+                               # (1.0 = isotropic, default; 0.9 = distinct eigenvalues)
+
+# Named variants — used by load_data(synthetic_variant=...) so callers never
+# need to know the internal (ordered_lda, noise_scale_decay) values.
+SYNTHETIC_VARIANTS = {
+    "nonOrderedLDA": dict(ordered_lda=False, noise_scale_decay=1.0),
+    "orderedLDA":    dict(ordered_lda=True,  noise_scale_decay=1.0),
+    "orderedBoth":   dict(ordered_lda=True,  noise_scale_decay=0.9),
+}
 # ==============================================================================
 
 
 def generate_synthetic(
-    p_noise:         int   = P_NOISE,
-    C:               int   = C,
-    sigma_noise:     float = SIGMA_NOISE,
-    sigma_signal:    float = SIGMA_SIGNAL,
-    class_sep:       float = CLASS_SEP,
-    n_per_class:     int   = N_PER_CLASS,
-    test_size:       float = TEST_SIZE,
-    val_size:        float = VAL_SIZE,
-    seed:            int   = 42,
-    ordered_lda:     bool  = False,
-    lda_scale_decay: float = LDA_SCALE_DECAY,
+    p_noise:          int   = P_NOISE,
+    C:                int   = C,
+    sigma_noise:      float = SIGMA_NOISE,
+    sigma_signal:     float = SIGMA_SIGNAL,
+    class_sep:        float = CLASS_SEP,
+    n_per_class:      int   = N_PER_CLASS,
+    test_size:        float = TEST_SIZE,
+    val_size:         float = VAL_SIZE,
+    seed:             int   = 42,
+    ordered_lda:      bool  = False,
+    lda_scale_decay:  float = LDA_SCALE_DECAY,
+    noise_scale_decay: float = NOISE_SCALE_DECAY,
 ) -> dict:
     """
     Generate the synthetic PCA-vs-LDA divergence dataset.
@@ -166,7 +178,10 @@ def generate_synthetic(
     # ------------------------------------------------------------------
     # Generate data
     # ------------------------------------------------------------------
-    X_noise  = rng.normal(0.0, sigma_noise, (n, p_noise)).astype(np.float32)
+    # Each noise dim i gets std = sigma_noise * noise_scale_decay^i.
+    # decay=1.0 → isotropic (original behaviour); decay<1 → distinct eigenvalues.
+    noise_sigmas = sigma_noise * (noise_scale_decay ** np.arange(p_noise))
+    X_noise  = (rng.normal(0.0, 1.0, (n, p_noise)) * noise_sigmas).astype(np.float32)
     X_signal = np.zeros((n, p_signal), dtype=np.float32)
     y        = np.zeros(n, dtype=np.int64)
 
@@ -230,6 +245,7 @@ def generate_synthetic(
         test_size=test_size, val_size=val_size, seed=seed,
         ordered_lda=ordered_lda,
         lda_scale_decay=lda_scale_decay,
+        noise_scale_decay=noise_scale_decay,
     )
 
     return dict(
@@ -435,17 +451,135 @@ data = load_data("synthetic", seed=42)   # NOTE: load_data uses nonOrderedLDA by
     print(f"[synthetic] Wrote {readme_path}")
 
 
+def _write_nsd_readme(out_dir: str, params: dict):
+    """Write README.md for the orderedBoth subfolder."""
+    nsd      = params.get("noise_scale_decay", NOISE_SCALE_DECAY)
+    decay    = params.get("lda_scale_decay",   LDA_SCALE_DECAY)
+    p_noise  = params.get("p_noise",  P_NOISE)
+    p_signal = params.get("p_signal", C - 1)
+    p        = params.get("p",        p_noise + p_signal)
+    n_C      = params.get("C",        C)
+    n_per    = params.get("n_per_class", N_PER_CLASS)
+    n_total  = params.get("n",        n_per * n_C)
+    s_noise  = params.get("sigma_noise",  SIGMA_NOISE)
+    s_signal = params.get("sigma_signal", SIGMA_SIGNAL)
+    c_sep    = params.get("class_sep",    CLASS_SEP)
+
+    # Expected noise eigenvalues for first few dims
+    noise_eigs = [f"dim {i}: σ²={s_noise**2 * nsd**(2*i):.2f}" for i in range(5)]
+
+    content = f"""\
+# Synthetic Dataset — Ordered Both (Separable Eigenvalues)
+
+Generated for **Experiment 2** (and related experiments) — variant with **distinct eigenvalues
+in both the noise block and the signal block**.
+
+---
+
+## Key difference from other variants
+
+| Variant | Noise block | Signal block | Folder |
+|---------|------------|--------------|--------|
+| `nonOrderedLDA` | isotropic N(0, {s_noise}²·I) — flat spectrum | random class means | `nonOrderedLDA/` |
+| `orderedLDA`    | isotropic N(0, {s_noise}²·I) — flat spectrum | ordered by LDA power | `orderedLDA/` |
+| **`orderedBoth`** | **geometrically decaying variances** | **ordered by LDA power** | **`orderedBoth/`** |
+
+`orderedBoth` is the only variant where individual PCA eigenvectors are recoverable
+(each has a distinct eigenvalue) AND LDA directions are ordered by discriminative power.
+
+---
+
+## Construction
+
+### Noise block (dims 0–{p_noise-1})
+
+Noise dim `i` is drawn from `N(0, σ_i²)` where:
+```
+σ_i = {s_noise} × {nsd}^i       (noise_scale_decay = {nsd})
+```
+This gives eigenvalue `λ_i ≈ σ_i²`:
+{chr(10).join(f"  {e}" for e in noise_eigs)}
+  ...
+
+The spectrum decays geometrically, so consecutive eigenvalues are separated by a
+gap ∝ `(1 - {nsd}²) × σ_i²`. PCA can uniquely identify each axis.
+
+### Signal block (dims {p_noise}–{p-1})
+
+Identical to `orderedLDA/`: class means are constructed so that signal dim `j` has
+between-class scatter proportional to `({c_sep} × {decay}^j)²`. LDA direction `j`
+aligns with signal axis `j`; discriminative power decreases with `j`.
+
+---
+
+## Dataset Parameters
+
+| Parameter           | Value     | Description                                     |
+|---------------------|-----------|-------------------------------------------------|
+| `p_noise`           | {p_noise}        | Number of noise dimensions                      |
+| `p_signal`          | {p_signal}        | Number of signal dimensions (= C-1)             |
+| `p_total`           | {p}        | Total input dimensionality                      |
+| `C`                 | {n_C}        | Number of classes                               |
+| `n_per_class`       | {n_per}      | Samples per class                               |
+| `n_total`           | {n_total:,}   | Total samples                                   |
+| `sigma_noise`       | {s_noise}      | Base std of noise block (dim 0)                 |
+| `noise_scale_decay` | {nsd}    | Geometric decay rate for noise dim stds         |
+| `sigma_signal`      | {s_signal}      | Within-class std of signal block                |
+| `class_sep`         | {c_sep}      | Base scale of class means                       |
+| `lda_scale_decay`   | {decay}    | Geometric decay rate for LDA scales             |
+
+---
+
+## File naming
+
+```
+synthetic_p{p}_C{n_C}_n{n_total}_seed{{s}}_olda_nsd{int(round(nsd*100))}.npz
+synthetic_p{p}_C{n_C}_n{n_total}_seed{{s}}_olda_nsd{int(round(nsd*100))}_meta.npz
+```
+
+---
+
+## Generation
+
+```bash
+conda activate mrl_env
+cd Mat_embedding_hyperbole/code
+python weight_symmetry/data/synthetic.py --ordered-lda --noise-scale-decay {nsd} --all-seeds --verify
+```
+
+Source: `code/weight_symmetry/data/synthetic.py`
+"""
+    readme_path = os.path.join(out_dir, "README.md")
+    with open(readme_path, "w") as f:
+        f.write(content)
+    print(f"[synthetic] Wrote {readme_path}")
+
+
 def save_synthetic(data: dict, seed: int, out_dir: str = None):
     """Save generated dataset to out_dir as two .npz files.
 
-    out_dir defaults to DATA_DIR_OLDA when ordered_lda=True, DATA_DIR otherwise.
+    Folder routing (when out_dir is None):
+      noise_scale_decay < 1 and ordered_lda=True  → orderedBoth/
+      noise_scale_decay = 1 and ordered_lda=True  → orderedLDA/
+      otherwise                                   → nonOrderedLDA/
     """
     ordered = data["params"].get("ordered_lda", False)
+    nsd     = data["params"].get("noise_scale_decay", 1.0)
+    use_nsd = nsd < 1.0
+
     if out_dir is None:
-        out_dir = DATA_DIR_OLDA if ordered else DATA_DIR
+        if use_nsd and ordered:
+            out_dir = DATA_DIR_NSD
+        elif ordered:
+            out_dir = DATA_DIR_OLDA
+        else:
+            out_dir = DATA_DIR
     os.makedirs(out_dir, exist_ok=True)
+
     olda_str = "_olda" if ordered else ""
-    tag = f"p{data['params']['p']}_C{data['params']['C']}_n{data['params']['n']}_seed{seed}{olda_str}"
+    nsd_str  = f"_nsd{int(round(nsd * 100))}" if use_nsd else ""
+    tag = (f"p{data['params']['p']}_C{data['params']['C']}"
+           f"_n{data['params']['n']}_seed{seed}{olda_str}{nsd_str}")
 
     # Main data file
     data_path = os.path.join(out_dir, f"synthetic_{tag}.npz")
@@ -470,8 +604,10 @@ def save_synthetic(data: dict, seed: int, out_dir: str = None):
     print(f"[synthetic] Saved {data_path}")
     print(f"[synthetic] Saved {meta_path}")
 
-    # Write README for the ordered_lda subfolder (only once, idempotent)
-    if ordered:
+    # Write README (idempotent)
+    if use_nsd and ordered:
+        _write_nsd_readme(out_dir, data["params"])
+    elif ordered:
         _write_olda_readme(out_dir, data["params"])
 
     return data_path, meta_path
@@ -479,7 +615,8 @@ def save_synthetic(data: dict, seed: int, out_dir: str = None):
 
 def load_synthetic(seed: int = 42, out_dir: str = None,
                    ordered_lda: bool = False,
-                   lda_scale_decay: float = LDA_SCALE_DECAY) -> dict:
+                   lda_scale_decay: float = LDA_SCALE_DECAY,
+                   noise_scale_decay: float = NOISE_SCALE_DECAY) -> dict:
     """
     Load pre-generated synthetic dataset. Auto-generates if file not found.
     Returns same dict as generate_synthetic().
@@ -488,12 +625,19 @@ def load_synthetic(seed: int = 42, out_dir: str = None,
     ordered_lda=True: loads from orderedLDA/ (_olda tag suffix); auto-generates if missing.
     out_dir: override the directory (defaults based on ordered_lda flag).
     """
+    use_nsd = noise_scale_decay < 1.0
     if out_dir is None:
-        out_dir = DATA_DIR_OLDA if ordered_lda else DATA_DIR
+        if use_nsd and ordered_lda:
+            out_dir = DATA_DIR_NSD
+        elif ordered_lda:
+            out_dir = DATA_DIR_OLDA
+        else:
+            out_dir = DATA_DIR
     p        = P_NOISE + (C - 1)
     n        = N_PER_CLASS * C
     olda_str = "_olda" if ordered_lda else ""
-    tag      = f"p{p}_C{C}_n{n}_seed{seed}{olda_str}"
+    nsd_str  = f"_nsd{int(round(noise_scale_decay * 100))}" if use_nsd else ""
+    tag      = f"p{p}_C{C}_n{n}_seed{seed}{olda_str}{nsd_str}"
     dpath    = os.path.join(out_dir, f"synthetic_{tag}.npz")
     mpath    = os.path.join(out_dir, f"synthetic_{tag}_meta.npz")
 
@@ -501,7 +645,8 @@ def load_synthetic(seed: int = 42, out_dir: str = None,
         print(f"[synthetic] File not found — generating seed={seed} "
               f"ordered_lda={ordered_lda} ...")
         data = generate_synthetic(seed=seed, ordered_lda=ordered_lda,
-                                  lda_scale_decay=lda_scale_decay)
+                                  lda_scale_decay=lda_scale_decay,
+                                  noise_scale_decay=noise_scale_decay)
         save_synthetic(data, seed, out_dir)
         return data
 
@@ -514,10 +659,12 @@ def load_synthetic(seed: int = 42, out_dir: str = None,
                  "test_size", "val_size", "seed"]
     params = {k: m[k].item() for k in base_keys}
     # Newer fields — default gracefully for files generated before these were added
-    params["ordered_lda"]     = bool(m["ordered_lda"].item()) \
-                                 if "ordered_lda" in m else False
-    params["lda_scale_decay"] = float(m["lda_scale_decay"].item()) \
-                                 if "lda_scale_decay" in m else LDA_SCALE_DECAY
+    params["ordered_lda"]      = bool(m["ordered_lda"].item()) \
+                                  if "ordered_lda" in m else False
+    params["lda_scale_decay"]  = float(m["lda_scale_decay"].item()) \
+                                  if "lda_scale_decay" in m else LDA_SCALE_DECAY
+    params["noise_scale_decay"] = float(m["noise_scale_decay"].item()) \
+                                  if "noise_scale_decay" in m else NOISE_SCALE_DECAY
 
     return dict(
         X_train=d["X_train"], y_train=d["y_train"],
@@ -633,6 +780,9 @@ if __name__ == "__main__":
     parser.add_argument("--lda-scale-decay", type=float, default=LDA_SCALE_DECAY,
                         help=f"Geometric decay rate for ordered LDA scales "
                              f"(default: {LDA_SCALE_DECAY})")
+    parser.add_argument("--noise-scale-decay", type=float, default=NOISE_SCALE_DECAY,
+                        help=f"Geometric decay rate for noise dim variances; "
+                             f"<1 gives distinct eigenvalues (default: {NOISE_SCALE_DECAY})")
     args = parser.parse_args()
 
     seeds = [42, 43, 44, 45, 46] if args.all_seeds else [args.seed]
@@ -642,7 +792,8 @@ if __name__ == "__main__":
         print(f"\n[synthetic] Generating seed={s}  variant={variant} ...")
         data = generate_synthetic(seed=s,
                                   ordered_lda=args.ordered_lda,
-                                  lda_scale_decay=args.lda_scale_decay)
+                                  lda_scale_decay=args.lda_scale_decay,
+                                  noise_scale_decay=args.noise_scale_decay)
         p = data["params"]
         print(f"  p={p['p']} (noise={p['p_noise']}, signal={p['p_signal']})  "
               f"C={p['C']}  n={p['n']}  "

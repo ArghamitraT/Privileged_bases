@@ -25,26 +25,32 @@ from typing import Tuple, Dict
 # PCA directions
 # ==============================================================================
 
-def compute_pca_directions(X_train: torch.Tensor, d: int) -> np.ndarray:
+def compute_pca_dirs_and_eigenvalues(X_train, d: int):
     """
-    Compute top-d PCA eigenvectors from training data.
-
-    Uses SVD of the (centered) data matrix. Data should already be centred
-    (StandardScaler was applied in loader).
+    Compute top-d PCA eigenvectors and eigenvalues from training data.
 
     Args:
-        X_train : (n, p) training data tensor
-        d       : number of eigenvectors to return
+        X_train : (n, p) tensor or numpy array — should already be centred
+        d       : number of components to return
 
     Returns:
-        U : (p, d) numpy array — columns are top-d eigenvectors, ordered by
-            descending eigenvalue (= descending singular value of X_train)
+        U    : (p, d) numpy array — columns are top-d eigenvectors
+        eigs : (d,)  numpy array — eigenvalues (variance per direction = s²/(n-1))
     """
-    X = X_train.numpy().astype(np.float64)  # (n, p)
-    # SVD: X = U S Vh, right singular vectors Vh rows = eigenvectors of X^T X
-    # We want top-d right singular vectors = first d rows of Vh, transposed -> (p, d)
-    _, _, Vh = np.linalg.svd(X, full_matrices=False)   # Vh: (min(n,p), p)
-    U = Vh[:d, :].T                                     # (p, d)
+    X = X_train.numpy().astype(np.float64) if hasattr(X_train, "numpy") else np.asarray(X_train, dtype=np.float64)
+    n = X.shape[0]
+    _, s, Vh = np.linalg.svd(X, full_matrices=False)   # s: (min(n,p),)
+    U    = Vh[:d, :].T                                  # (p, d)
+    eigs = (s[:d] ** 2) / (n - 1)                      # variance per direction
+    return U, eigs
+
+
+def compute_pca_directions(X_train, d: int) -> np.ndarray:
+    """
+    Compute top-d PCA eigenvectors from training data.
+    Wrapper around compute_pca_dirs_and_eigenvalues for backward compatibility.
+    """
+    U, _ = compute_pca_dirs_and_eigenvalues(X_train, d)
     return U
 
 
@@ -95,6 +101,27 @@ def column_alignment(A_cols: np.ndarray, U_cols: np.ndarray) -> float:
     return float(cos_sim.max(axis=1).mean())
 
 
+def paired_cosine(a_col: np.ndarray, u_col: np.ndarray) -> float:
+    """
+    Absolute cosine similarity between a single encoder direction and its
+    paired eigenvector — |a_k · u_k| / (|a_k| |u_k|).
+
+    Unlike column_alignment this does NOT take max over the top-k set.
+    A value of 1.0 means dim k points exactly along eigenvector k (up to sign).
+    A value near 0 means dim k is orthogonal to eigenvector k.
+
+    Args:
+        a_col : (p,) — k-th encoder direction
+        u_col : (p,) — k-th ground-truth eigenvector
+
+    Returns:
+        float in [0, 1]
+    """
+    a_n = a_col / (np.linalg.norm(a_col) + 1e-10)
+    u_n = u_col / (np.linalg.norm(u_col) + 1e-10)
+    return float(np.abs(a_n @ u_n))
+
+
 # ==============================================================================
 # Evaluate all prefix sizes for one model
 # ==============================================================================
@@ -102,6 +129,7 @@ def column_alignment(A_cols: np.ndarray, U_cols: np.ndarray) -> float:
 def compute_all_prefix_metrics(
     model,
     pca_dirs: np.ndarray,
+    flip_dims: bool = False,
 ) -> Dict[str, list]:
     """
     For each prefix size m = 1..d, compute subspace angle and column alignment
@@ -119,26 +147,32 @@ def compute_all_prefix_metrics(
     """
     d = model.embed_dim
     A = model.get_decoder_matrix().cpu().numpy().astype(np.float64)  # (p, d)
+    if flip_dims:
+        A = np.ascontiguousarray(A[:, ::-1])
 
     prefix_sizes      = []
     subspace_ang_list = []
     col_align_list    = []
+    paired_cos_list   = []
 
     for m in range(1, d + 1):
         A_m = A[:, :m]                  # first m columns of A, shape (p, m)
         U_m = pca_dirs[:, :m]           # top-m PCA eigenvectors, shape (p, m)
 
         ang   = subspace_angle(A_m, U_m)
-        align = column_alignment(A_m, U_m)        # align against top-m eigenvectors only
+        align = column_alignment(A_m, U_m)
+        pc    = paired_cosine(A[:, m - 1], pca_dirs[:, m - 1])  # dim m vs eigenvector m
 
         prefix_sizes.append(m)
         subspace_ang_list.append(ang)
         col_align_list.append(align)
+        paired_cos_list.append(pc)
 
     return {
         "prefix_sizes":      prefix_sizes,
         "subspace_angles":   subspace_ang_list,
         "column_alignments": col_align_list,
+        "paired_cosines":    paired_cos_list,
     }
 
 
@@ -151,58 +185,117 @@ def compute_encoder_subspace_metrics(
     pca_dirs: np.ndarray,
     lda_dirs: np.ndarray,
     flip_dims: bool = False,
+    model_type: str = "lae",
 ) -> Dict[str, list]:
     """
-    For each prefix size k = 1..d, compute:
-      - Principal angle between encoder subspace span(B^T[:,1:k]) and top-k PCA dirs
-      - Principal angle between encoder subspace span(B^T[:,1:k]) and top-k LDA dirs
-        (only for k <= n_lda = lda_dirs.shape[1]; NaN beyond that)
+    For each prefix size k = 1..d, compute subspace angle and cosine similarity
+    to PCA and LDA ground-truth directions.
 
-    Uses encoder rows B^T (= encoder.weight.T) as the learned directions in R^p.
-    This is consistent for both reconstruction and classification models.
+    The comparison object differs by model family — one consistent object per family
+    is used for both PCA and LDA comparisons:
+
+        model_type="lae"        (MSE models, LinearAE):
+            Decoder columns  A[:,1:k]  vs  PCA eigenvectors
+            Decoder columns  A[:,1:k]  vs  LDA directions
+            Rationale: the MSE loss directly trains A to span the PCA subspace;
+            decoder columns are the natural "what did the model learn" object.
+
+        model_type="lae_heads"  (CE models, LinearAEWithHeads):
+            (W_k B_{1:k})^T columns  vs  PCA eigenvectors
+            (W_k B_{1:k})^T columns  vs  LDA directions
+            Rationale: the full linear map from input to logits is W_k B_{1:k};
+            its row space is the set of input directions used for classification.
+
+        model_type="lae_fisher" (Fisher/LDA models, LinearAE):
+            Encoder rows  B^T[:,1:k]  vs  PCA eigenvectors
+            Encoder rows  B^T[:,1:k]  vs  LDA directions
+            Rationale: the Fisher loss directly trains B to align with LDA
+            directions; encoder rows are the natural comparison object.
 
     Args:
-        model    : trained LinearAE or LinearAEWithHeads
-        pca_dirs : (p, n_pca) PCA eigenvectors from training data
-        lda_dirs : (p, n_lda) LDA discriminant directions from training data
+        model      : trained LinearAE or LinearAEWithHeads
+        pca_dirs   : (p, n_pca) PCA eigenvectors from training data
+        lda_dirs   : (p, n_lda) LDA discriminant directions from training data
+        flip_dims  : reverse column order (for PrefixL1 models)
+        model_type : "lae" | "lae_heads" | "lae_fisher"
 
     Returns:
         dict with keys:
             "prefix_sizes" : [1, 2, ..., d]
             "pca_angles"   : mean principal angle to PCA subspace per prefix
             "lda_angles"   : mean principal angle to LDA subspace per prefix (NaN if k > n_lda)
+            "pca_cosine"   : mean max cosine similarity to PCA per prefix
+            "lda_cosine"   : mean max cosine similarity to LDA per prefix (NaN if k > n_lda)
             "n_lda"        : number of LDA directions available
     """
     d     = model.embed_dim
-    B_T   = model.get_encoder_matrix().cpu().numpy().T.astype(np.float64)  # (p, d)
-    if flip_dims:
-        # Reverse column order so the most informative direction (last row of B)
-        # becomes column 0, matching PrefixL1's reversed-prefix convention.
-        B_T = np.ascontiguousarray(B_T[:, ::-1])
     n_lda = lda_dirs.shape[1]
+
+    # Pre-extract the comparison matrix for this model type
+    # All three branches produce a (p, d) matrix whose columns are compared to eigenvectors.
+    B_T = model.get_encoder_matrix().cpu().numpy().T.astype(np.float64)  # (p, d) always needed
+    if flip_dims:
+        B_T = np.ascontiguousarray(B_T[:, ::-1])
+
+    if model_type == "lae":
+        # Decoder columns: A ∈ R^{p×d}
+        A = model.get_decoder_matrix().cpu().numpy().astype(np.float64)  # (p, d)
+        if flip_dims:
+            A = np.ascontiguousarray(A[:, ::-1])
+    elif model_type == "lae_heads":
+        # Pre-extract head weights: W_k ∈ R^{C×k} for k=1..d
+        head_weights = [
+            model.heads[k - 1].weight.detach().cpu().numpy().astype(np.float64)
+            for k in range(1, d + 1)
+        ]
+    # lae_fisher: uses B_T (encoder rows) already extracted above
 
     prefix_sizes = []
     pca_angles   = []
     lda_angles   = []
+    pca_cosine   = []
+    lda_cosine   = []
+    pca_paired   = []
+    lda_paired   = []
 
     for k in range(1, d + 1):
-        B_k = B_T[:, :k]                     # (p, k)
-        U_k = pca_dirs[:, :k].astype(np.float64)   # (p, k)
-        pca_angles.append(subspace_angle(B_k, U_k))
+        U_k = pca_dirs[:, :k].astype(np.float64)  # (p, k)
+
+        # --- select comparison vectors for this model type ---
+        if model_type == "lae":
+            comp_k = A[:, :k]                          # (p, k) decoder columns
+        elif model_type == "lae_heads":
+            W_k    = head_weights[k - 1]               # (C, k)
+            comp_k = (W_k @ B_T[:, :k].T).T           # (p, C)
+        else:  # lae_fisher
+            comp_k = B_T[:, :k]                        # (p, k) encoder rows
+
+        pca_angles.append(subspace_angle(comp_k, U_k))
+        pca_cosine.append(column_alignment(comp_k, U_k))
+        # Paired PCA: always use encoder rows (dim-to-dim alignment)
+        pca_paired.append(paired_cosine(B_T[:, k - 1], pca_dirs[:, k - 1]))
 
         if k <= n_lda:
             L_k = lda_dirs[:, :k].astype(np.float64)  # (p, k)
-            lda_angles.append(subspace_angle(B_k, L_k))
+            lda_angles.append(subspace_angle(comp_k, L_k))
+            lda_cosine.append(column_alignment(comp_k, L_k))
+            lda_paired.append(paired_cosine(B_T[:, k - 1], lda_dirs[:, k - 1]))
         else:
             lda_angles.append(float("nan"))
+            lda_cosine.append(float("nan"))
+            lda_paired.append(float("nan"))
 
         prefix_sizes.append(k)
 
     return {
-        "prefix_sizes": prefix_sizes,
-        "pca_angles":   pca_angles,
-        "lda_angles":   lda_angles,
-        "n_lda":        n_lda,
+        "prefix_sizes":    prefix_sizes,
+        "pca_angles":      pca_angles,
+        "lda_angles":      lda_angles,
+        "pca_cosine":      pca_cosine,
+        "lda_cosine":      lda_cosine,
+        "pca_paired":      pca_paired,
+        "lda_paired":      lda_paired,
+        "n_lda":           n_lda,
     }
 
 

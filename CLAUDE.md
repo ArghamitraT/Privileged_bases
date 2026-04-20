@@ -3,6 +3,30 @@
 ## Goal
 Explore whether Matryoshka Representation Learning (MRL) increases embedding interpretability.
 
+## Meeting / Presentation Files
+
+Any file prepared for a meeting (slides, summary notes, figures, `.md` briefs) goes to:
+```
+Mat_embedding_hyperbole/files/presentations/
+```
+Use a descriptive filename with the date, e.g. `2026_04_20_weekly_sync.md`.
+
+**NEVER delete any file from `files/presentations/`.** If a file needs to be replaced or renamed, create the new file alongside the old one.
+
+**Math formatting rule:** In all meeting/presentation `.md` files, every mathematical expression must be written in LaTeX — use `$...$` for inline and `$$...$$` for display equations. The only exception is actual code (Python, shell commands, array indexing shown as implementation notes), which stays in code blocks.
+
+---
+
+## Weight Symmetry Paper
+
+**Before writing or modifying any code under `weight_symmetry/`**, read:
+- **[plans/ICMLweightSymmetry_experiment_plan.md](plans/ICMLweightSymmetry_experiment_plan.md)** — experiment goals, datasets, metrics, and what each script is expected to produce.
+
+**Before creating or modifying any plot script under `weight_symmetry/scripts/`**, also read:
+- **[plans/ICMLWorkshop_figure_style_plan.md](plans/ICMLWorkshop_figure_style_plan.md)** — fonts, colors, sizes, saving convention, panel layout.
+
+---
+
 ## Key Hypothesis: "Privileged Bases"
 - Original axis-aligned data has privileged bases (certain axes carry semantic meaning)
 - Test: random rotations should degrade decision tree accuracy more for embeddings than original data (or vice versa)
@@ -182,6 +206,9 @@ Each experiment script must have a CONFIG block immediately after the imports:
 # ==============================================================================
 # CONFIG — edit here to change the full run; use --fast for a quick smoke test
 # ==============================================================================
+EXPERIMENT_NOTE = ("Why this config was chosen, what was tried before, what changed. "
+                   "Update whenever a key setting (optimizer, LR, batch size, loss) "
+                   "changes so future runs have context without reading git log.")
 DATASET       = "mnist"
 EMBED_DIM     = 64
 HIDDEN_DIM    = 256

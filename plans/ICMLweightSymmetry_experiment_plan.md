@@ -3,6 +3,7 @@
 **Setting: Linear autoencoders on MNIST (p=100 after PCA projection, d=50)**
 **Seeds: 5 random seeds for all experiments**
 **Models: MSE LAE, Oftadeh loss, Standard MRL (M={5,10,25,50}), Full-prefix MRL (M=[50])**
+**Conda environment: `mrl_env_cuda12` (use this for GPU runs)**
 
 ---
 

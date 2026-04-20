@@ -83,7 +83,7 @@ def load_data(
     test_size: float = 0.2,
     val_size: float = 0.1,
     standardise: bool = True,
-    ordered_lda: bool = False,
+    synthetic_variant: str = "nonOrderedLDA",
 ) -> DataSplit:
     """
     Load dataset, split into train/val/test, optionally standardise.
@@ -101,8 +101,10 @@ def load_data(
     """
     # Synthetic dataset has its own load path
     if dataset == "synthetic":
-        from weight_symmetry.data.synthetic import load_synthetic
-        raw = load_synthetic(seed=seed, ordered_lda=ordered_lda)
+        from weight_symmetry.data.synthetic import load_synthetic, SYNTHETIC_VARIANTS
+        vparams = SYNTHETIC_VARIANTS.get(synthetic_variant,
+                                         SYNTHETIC_VARIANTS["nonOrderedLDA"])
+        raw = load_synthetic(seed=seed, **vparams)
         p = raw["params"]
         print(f"[loader] Synthetic: p={p['p']} C={p['C']} "
               f"train={raw['X_train'].shape[0]} val={raw['X_val'].shape[0]} "
@@ -206,8 +208,16 @@ def _compute_pca_lda_directions(
     n_lda     = n_classes - 1
     lda = LinearDiscriminantAnalysis()
     lda.fit(X_train_np, y_train_np)
-    lda_raw  = lda.scalings_[:, :n_lda]          # (p, C-1)
-    lda_dirs, _ = np.linalg.qr(lda_raw)          # orthonormalise → (p, C-1)
+    lda_raw  = lda.scalings_[:, :n_lda].astype(np.float64)   # (p, C-1), sorted by discriminability
+    # MGS orthonormalisation: preserves column order so col 0 stays most discriminative.
+    # QR would destroy this ordering.
+    Q = np.zeros_like(lda_raw)
+    for i in range(lda_raw.shape[1]):
+        v = lda_raw[:, i].copy()
+        for j in range(i):
+            v -= np.dot(Q[:, j], v) * Q[:, j]
+        Q[:, i] = v / np.linalg.norm(v)
+    lda_dirs = Q
 
     return pca_dirs.astype(np.float64), lda_dirs.astype(np.float64)
 
