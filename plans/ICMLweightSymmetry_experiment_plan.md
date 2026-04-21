@@ -156,6 +156,16 @@ LDA gives at most C-1 discriminant directions.
 - 20 Newsgroups: C=20 → 19 LDA directions.
 - Angle-to-LDA curves always plotted up to min(k, C-1).
 
+### Embedding dimensions per dataset and loss family
+
+| Dataset | MSE / CE `embed_dim` | Fisher `embed_dim` | MSE / CE MRL prefixes | Fisher MRL prefixes |
+|---------|---------------------|--------------------|----------------------|---------------------|
+| Synthetic ($C=20$, $n_\text{lda}=19$) | 50 | 19 | $\{5,10,25,50\}$ | $\{5,10,15,19\}$ |
+| MNIST / Fashion-MNIST ($C=10$, $n_\text{lda}=9$) | 32 | 9 (declared 32, clamped at runtime) | $\{4,8,16,32\}$ | $\{2,4,7,9\}$ |
+
+Fisher $\text{embed\_dim}$ is always $= C-1$ (the number of LDA directions).
+For MNIST/Fashion-MNIST the Fisher encoder is clamped to $d=9$ at runtime regardless of the declared value.
+
 ### What to measure
 For each prefix size k = 1..min(d, C-1):
 1. **Angle to PCA subspace**: principal angles between encoder B^T[:,1:k] and top-k PCA eigenvectors
@@ -318,3 +328,29 @@ Try all of the following, report best two in paper:
 4. Experiment 3b (drop-off) — tests conjecture, uses same checkpoints
 5. Experiment 4a (prefix curves) — supporting evidence
 6. Experiment 4b (subspace stability) — if time permits
+
+---
+
+## Checkpoint Tag → Model Name Mapping
+
+Tags are the strings in checkpoint filenames (`seed{N}_{tag}_best.pt`).
+The table below records the canonical mapping used in paper figures and the
+kurtosis/analysis scripts. Update this table whenever a new experiment run
+uses different tags.
+
+### Exp2 divergence run — `exprmnt_2026_04_19__16_00_49`
+
+| Checkpoint tag | Model name | Loss | Expected alignment |
+|----------------|------------|------|--------------------|
+| `mse_lae` | Unordered LAE | MSE | neither |
+| `std_mrl_mse` | MRL | MSE | PCA (weak) |
+| `fp_mrl_mse_ortho` | FP MRL | MSE | PCA — **trained with orthogonality constraint** |
+| `prefix_l1_mse` | PrefixL1 | MSE | PCA |
+| `nonuniform_l2` | NonUniform L2 | MSE | PCA |
+| `normal_ce` | Unordered CE | CE | neither |
+| `std_mrl_ce` | MRL (CE) | CE | LDA |
+| `fp_mrl_ce` | FP MRL (CE) | CE | LDA |
+| `prefix_l1_ce` | PrefixL1 (CE) | CE | LDA |
+
+> Note: `fp_mrl_mse_ortho` (FP MRL with orthogonality) is intentionally used
+> in place of plain `fp_mrl_mse` for this run.

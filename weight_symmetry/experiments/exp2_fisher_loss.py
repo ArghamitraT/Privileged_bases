@@ -272,6 +272,8 @@ def plot_training_curves(all_histories, run_dir, fig_stamp):
         tag   = mc["tag"]
         label = mc["label"]
         style = PLOT_STYLES[label]
+        if not all_histories[tag]:
+            continue
         rows    = [h["train_losses"] for h in all_histories[tag]]
         max_len = max(len(r) for r in rows)
         mat     = np.array([
@@ -305,6 +307,8 @@ def plot_metrics(all_metrics, lda_baseline, all_accuracies, run_dir, fig_stamp, 
     ax = axes[0]
     for mc in MODEL_CONFIGS:
         tag, label = mc["tag"], mc["label"]
+        if not all_metrics[tag]:
+            continue
         style   = PLOT_STYLES[label]
         n_seeds = len(all_metrics[tag])
         mat     = np.array([[all_metrics[tag][s]["lda_angles"][k] for k in range(n_lda)]
@@ -325,6 +329,8 @@ def plot_metrics(all_metrics, lda_baseline, all_accuracies, run_dir, fig_stamp, 
     ax = axes[1]
     for mc in MODEL_CONFIGS:
         tag, label = mc["tag"], mc["label"]
+        if not all_metrics[tag]:
+            continue
         style   = PLOT_STYLES[label]
         n_seeds = len(all_metrics[tag])
         mat     = np.array([[all_metrics[tag][s]["lda_cosine"][k] for k in range(n_lda)]
@@ -346,6 +352,8 @@ def plot_metrics(all_metrics, lda_baseline, all_accuracies, run_dir, fig_stamp, 
     all_xs = list(range(1, embed_dim + 1))
     for mc in MODEL_CONFIGS:
         tag, label = mc["tag"], mc["label"]
+        if not all_accuracies[tag]:
+            continue
         style   = PLOT_STYLES[label]
         n_seeds = len(all_accuracies[tag])
         mat     = np.array(all_accuracies[tag])   # (n_seeds, embed_dim)
@@ -381,8 +389,12 @@ def plot_ordered_lda_recovery(all_paired_cosines, lda_eigenvalues,
         Score = 1.0 only if every encoder dim k aligns perfectly with lda_k,
         weighted by how discriminative each direction is.
     """
-    n_lda  = lda_eigenvalues.shape[0]
-    avail  = min(top_k, np.array(list(all_paired_cosines.values())[0]).shape[1])
+    n_lda        = lda_eigenvalues.shape[0]
+    non_empty    = [v for v in all_paired_cosines.values() if v]
+    if not non_empty:
+        print("[exp2_fisher] plot_ordered_lda_recovery: no paired cosines — skipping")
+        return
+    avail  = min(top_k, np.array(non_empty[0]).shape[1])
     top_k  = min(top_k, n_lda, avail)
     xs     = list(range(1, top_k + 1))
 
@@ -392,6 +404,8 @@ def plot_ordered_lda_recovery(all_paired_cosines, lda_eigenvalues,
     ax = axes[0]
     for mc in MODEL_CONFIGS:
         tag, label = mc["tag"], mc["label"]
+        if not all_paired_cosines[tag]:
+            continue
         style  = PLOT_STYLES[label]
         mat    = np.array(all_paired_cosines[tag])[:, :top_k]   # (n_seeds, top_k)
         mean, std = mat.mean(0), mat.std(0)
@@ -418,6 +432,9 @@ def plot_ordered_lda_recovery(all_paired_cosines, lda_eigenvalues,
     scores       = []
     for mc in MODEL_CONFIGS:
         tag    = mc["tag"]
+        if not all_paired_cosines[tag]:
+            scores.append((0.0, 0.0))
+            continue
         mat    = np.array(all_paired_cosines[tag])             # (n_seeds, n_dims)
         n_dims = mat.shape[1]                                  # may be < n_lda
         eigs   = lda_eigenvalues[:n_dims] / lda_eigenvalues[:n_dims].sum()
@@ -458,6 +475,8 @@ def save_raw_data(all_metrics, all_histories, all_accuracies, lda_baseline, run_
     md = {}
     for mc in MODEL_CONFIGS:
         tag = mc["tag"]
+        if not all_metrics[tag]:
+            continue
         md[f"{tag}_lda_angles"] = np.array([m["lda_angles"] for m in all_metrics[tag]])
         md[f"{tag}_lda_cosine"] = np.array([m["lda_cosine"] for m in all_metrics[tag]])
         md[f"{tag}_pca_angles"] = np.array([m["pca_angles"] for m in all_metrics[tag]])
@@ -472,6 +491,8 @@ def save_raw_data(all_metrics, all_histories, all_accuracies, lda_baseline, run_
     hd = {}
     for mc in MODEL_CONFIGS:
         tag        = mc["tag"]
+        if not all_histories[tag]:
+            continue
         train_list = [np.array(h["train_losses"]) for h in all_histories[tag]]
         val_list   = [np.array(h["val_losses"])   for h in all_histories[tag]]
         best_list  = [h["best_epoch"]             for h in all_histories[tag]]
@@ -488,6 +509,8 @@ def save_raw_data(all_metrics, all_histories, all_accuracies, lda_baseline, run_
     ad = {}
     for mc in MODEL_CONFIGS:
         tag = mc["tag"]
+        if not all_accuracies[tag]:
+            continue
         ad[f"{tag}_accuracies"] = np.array(all_accuracies[tag])
     np.savez(os.path.join(run_dir, "accuracies_raw.npz"), **ad)
     print(f"[exp2_fisher] Saved metrics_raw.npz, histories_raw.npz, accuracies_raw.npz")
@@ -522,10 +545,12 @@ def save_results_summary(all_metrics, all_accuracies, lda_baseline, run_dir, emb
     for mc in MODEL_CONFIGS:
         tag     = mc["tag"]
         label   = mc["label"]
+        if not all_metrics[tag]:
+            continue
         n_seeds = len(all_metrics[tag])
         la_mean = np.array([all_metrics[tag][s]["lda_angles"] for s in range(n_seeds)]).mean(0)
         lc_mean = np.array([all_metrics[tag][s]["lda_cosine"] for s in range(n_seeds)]).mean(0)
-        ac_mean = np.array(all_accuracies[tag]).mean(0)
+        ac_mean = np.array(all_accuracies[tag]).mean(0) if all_accuracies[tag] else []
         lines.append(summary_row(label, la_mean, lc_mean, ac_mean))
 
     lines.append(summary_row("LDA baseline",
@@ -544,6 +569,8 @@ def save_results_summary(all_metrics, all_accuracies, lda_baseline, run_dir, emb
     for mc in MODEL_CONFIGS:
         tag     = mc["tag"]
         label   = mc["label"]
+        if not all_metrics[tag]:
+            continue
         n_seeds = len(all_metrics[tag])
         la_arr  = np.array([all_metrics[tag][s]["lda_angles"] for s in range(n_seeds)])
         lc_arr  = np.array([all_metrics[tag][s]["lda_cosine"] for s in range(n_seeds)])
@@ -727,6 +754,9 @@ def main():
             histories_npz = np.load(hist_npz_path)
             for mc in MODEL_CONFIGS:
                 tag = mc["tag"]
+                if f"{tag}_train_losses" not in histories_npz:
+                    all_histories[tag] = []
+                    continue
                 tm  = histories_npz[f"{tag}_train_losses"]
                 vm  = histories_npz[f"{tag}_val_losses"]
                 bm  = histories_npz[f"{tag}_best_epochs"]
@@ -762,6 +792,9 @@ def main():
                 tag  = mc["tag"]
                 flip = mc["flip_dims"]
                 ckpt = os.path.join(weights_dir, f"seed{seed}_{tag}_best.pt")
+                if not os.path.exists(ckpt):
+                    print(f"  [warn] missing checkpoint: {ckpt} — skipping")
+                    continue
                 model = LinearAE(data.input_dim, embed_dim)
                 model.load_state_dict(
                     torch.load(ckpt, weights_only=True, map_location="cpu"))

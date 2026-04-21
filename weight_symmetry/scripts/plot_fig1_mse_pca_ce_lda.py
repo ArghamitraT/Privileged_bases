@@ -12,15 +12,31 @@ Eigenvalue bars (col 0 only) loaded from:
   ICMLWorkshop_weightSymmetry2026/eigenvalues/
   → run compute_eigenvalues.py first if those files do not exist.
 
+Data sources
+------------
+  Synthetic data: MSE and CE share one metrics_raw.npz; Fisher is split across
+  three folders (--fisher-run, --fp-fisher-run, --extra-fisher-run).
+
+  MNIST (or any dataset where each loss family was trained separately): pass
+  --mse-run / --ce-run individually; use a single --fisher-run that already
+  contains all Fisher model keys.  --fp-fisher-run and --extra-fisher-run are
+  optional and skipped when not provided.
+
 Usage:
     Conda environment: mrl_env
 
-    python weight_symmetry/scripts/plot_fig1_mse_pca_ce_lda.py \\
-        --run exprmnt_2026_04_19__16_00_49/exprmnt_2026_04_20__13_46_30
-
+    # Synthetic: shared MSE+CE folder, multiple Fisher folders
     python weight_symmetry/scripts/plot_fig1_mse_pca_ce_lda.py \\
         --run exprmnt_2026_04_19__16_00_49/exprmnt_2026_04_20__13_46_30 \\
-        --fisher-run exprmnt_2026_04_20__01_31_36
+        --fisher-run      exprmnt_2026_04_20__01_31_36 \\
+        --fp-fisher-run   exprmnt_2026_04_20__01_44_24 \\
+        --extra-fisher-run exprmnt_2026_04_20__11_33_48
+
+    # MNIST: one folder per loss family
+    python weight_symmetry/scripts/plot_fig1_mse_pca_ce_lda.py \\
+        --mse-run    exprmnt_2026_04_20__21_33_52 \\
+        --ce-run     exprmnt_2026_04_20__21_35_38 \\
+        --fisher-run exprmnt_2026_04_20__21_52_46
 """
 
 import argparse
@@ -46,10 +62,10 @@ if _CODE_ROOT not in sys.path:
 
 from weight_symmetry.plotting.style import apply_style, save_fig
 
-DEFAULT_RESULTS_ROOT    = os.path.join(_PROJ_ROOT, "files", "results")
-DEFAULT_FISHER_RUN      = "exprmnt_2026_04_20__01_31_36"   # fisher baseline
-DEFAULT_FP_FISHER_RUN   = "exprmnt_2026_04_20__01_44_24"   # fp_fisher (better run)
-DEFAULT_EXTRA_FISHER_RUN= "exprmnt_2026_04_20__11_33_48"   # std_mrl_fisher + prefix_l1_fisher
+DEFAULT_RESULTS_ROOT     = os.path.join(_PROJ_ROOT, "files", "results")
+DEFAULT_FISHER_RUN       = "exprmnt_2026_04_20__01_31_36"   # fisher baseline
+DEFAULT_FP_FISHER_RUN    = "exprmnt_2026_04_20__01_44_24"   # fp_fisher (better run)
+DEFAULT_EXTRA_FISHER_RUN = "exprmnt_2026_04_20__11_33_48"   # std_mrl_fisher + prefix_l1_fisher
 DEFAULT_EIG_DIR         = os.path.join(
     DEFAULT_RESULTS_ROOT, "ICMLWorkshop_weightSymmetry2026", "eigenvalues"
 )
@@ -108,9 +124,32 @@ LEGEND_HANDLES = [
 # ---------------------------------------------------------------------------
 
 def _load_eig(eig_dir):
-    """Load pre-computed eigenvalue arrays."""
-    pca_norm = np.load(os.path.join(eig_dir, "pca_eigenvalues_norm.npy"))
-    lda_evr  = np.load(os.path.join(eig_dir, "lda_eigenvalues.npy"))
+    """Load pre-computed eigenvalue arrays.
+
+    Handles two filename conventions:
+      compute_eigenvalues.py → pca_eigenvalues_norm.npy + lda_eigenvalues.npy
+      exp2_objectivespecificity.py → pca_eigenvalues.npy + lda_eigenvalues_norm.npy
+    """
+    pca_norm_path = os.path.join(eig_dir, "pca_eigenvalues_norm.npy")
+    pca_raw_path  = os.path.join(eig_dir, "pca_eigenvalues.npy")
+    lda_path      = os.path.join(eig_dir, "lda_eigenvalues.npy")
+    lda_norm_path = os.path.join(eig_dir, "lda_eigenvalues_norm.npy")
+
+    if os.path.exists(pca_norm_path):
+        pca_norm = np.load(pca_norm_path)
+    elif os.path.exists(pca_raw_path):
+        raw = np.load(pca_raw_path)
+        pca_norm = raw / raw.sum() if raw.sum() > 0 else raw
+    else:
+        sys.exit(f"ERROR: no PCA eigenvalue file found in {eig_dir}")
+
+    if os.path.exists(lda_path):
+        lda_evr = np.load(lda_path)
+    elif os.path.exists(lda_norm_path):
+        lda_evr = np.load(lda_norm_path)
+    else:
+        sys.exit(f"ERROR: no LDA eigenvalue file found in {eig_dir}")
+
     return pca_norm, lda_evr
 
 
@@ -178,50 +217,101 @@ def _plot_panel(ax, axr, models, data, metric_suffix, n_plot,
 
 def main():
     parser = argparse.ArgumentParser(description="Generate Fig 1: 2×3 cosine similarity grid")
-    parser.add_argument("--run", required=True,
-                        help="Sub-run folder for LAE/CE data (contains metrics_raw.npz), "
-                             "e.g. exprmnt_.../exprmnt_...")
+    # --run is a convenience shorthand that sets both --mse-run and --ce-run to
+    # the same folder (original synthetic-data usage).
+    parser.add_argument("--run", default=None,
+                        help="Folder containing both MSE and CE models (sets --mse-run and "
+                             "--ce-run to the same path). Ignored when --mse-run/--ce-run are given.")
+    parser.add_argument("--mse-run", default=None,
+                        help="Folder with MSE-loss metrics_raw.npz")
+    parser.add_argument("--ce-run",  default=None,
+                        help="Folder with CE-loss metrics_raw.npz")
     parser.add_argument("--fisher-run",       default=DEFAULT_FISHER_RUN,
                         help="Folder with 'fisher' baseline metrics")
-    parser.add_argument("--fp-fisher-run",    default=DEFAULT_FP_FISHER_RUN,
-                        help="Folder with 'fp_fisher' metrics")
-    parser.add_argument("--extra-fisher-run", default=DEFAULT_EXTRA_FISHER_RUN,
-                        help="Folder with std_mrl_fisher + prefix_l1_fisher metrics")
+    parser.add_argument("--fp-fisher-run",    default=None,
+                        help="(optional) Folder with 'fp_fisher' metrics; "
+                             f"defaults to {DEFAULT_FP_FISHER_RUN} when --run is used")
+    parser.add_argument("--extra-fisher-run", default=None,
+                        help="(optional) Folder with std_mrl_fisher + prefix_l1_fisher metrics; "
+                             f"defaults to {DEFAULT_EXTRA_FISHER_RUN} when --run is used")
     parser.add_argument("--eig-dir",          default=None,
                         help="Directory containing pca/lda eigenvalue .npy files")
     parser.add_argument("--results-root", default=None)
+    parser.add_argument("--dataset", default=None,
+                        help="Dataset name shown in figure suptitle (e.g. synthetic, mnist, fashion_mnist)")
     args = parser.parse_args()
 
     results_root = args.results_root or DEFAULT_RESULTS_ROOT
-    eig_dir      = args.eig_dir or DEFAULT_EIG_DIR
 
-    run_dir  = os.path.join(results_root, args.run)
-    npz_path = os.path.join(run_dir, "metrics_raw.npz")
+    # When --mse-run is given explicitly (not via --run), use the MSE run folder as
+    # the default eigenvalue source (it contains dataset-specific pca/lda .npy files).
+    if args.eig_dir:
+        eig_dir = args.eig_dir
+    elif args.mse_run:
+        eig_dir = os.path.join(results_root, args.mse_run)
+    else:
+        eig_dir = DEFAULT_EIG_DIR
 
-    fisher_npzs = [
-        os.path.join(results_root, args.fisher_run,       "metrics_raw.npz"),
-        os.path.join(results_root, args.fp_fisher_run,    "metrics_raw.npz"),
-        os.path.join(results_root, args.extra_fisher_run, "metrics_raw.npz"),
+    # Resolve MSE / CE folders
+    mse_run = args.mse_run or args.run
+    ce_run  = args.ce_run  or args.run
+    if not mse_run or not ce_run:
+        sys.exit("ERROR: provide either --run or both --mse-run and --ce-run.")
+
+    # When using the legacy --run shorthand, apply the synthetic-data Fisher defaults
+    # so that existing command lines don't need --fp-fisher-run / --extra-fisher-run.
+    fp_fisher_run    = args.fp_fisher_run
+    extra_fisher_run = args.extra_fisher_run
+    if args.run is not None:
+        fp_fisher_run    = fp_fisher_run    or DEFAULT_FP_FISHER_RUN
+        extra_fisher_run = extra_fisher_run or DEFAULT_EXTRA_FISHER_RUN
+
+    mse_npz_path = os.path.join(results_root, mse_run, "metrics_raw.npz")
+    ce_npz_path  = os.path.join(results_root, ce_run,  "metrics_raw.npz")
+
+    # Build list of Fisher npz paths — optional ones are included only if provided
+    fisher_npz_candidates = [
+        (args.fisher_run,  True),   # required
+        (fp_fisher_run,    False),  # optional
+        (extra_fisher_run, False),  # optional
     ]
+    fisher_npzs = []
+    for folder, required in fisher_npz_candidates:
+        if not folder:
+            continue
+        p = os.path.join(results_root, folder, "metrics_raw.npz")
+        if required and not os.path.exists(p):
+            sys.exit(f"ERROR: not found: {p}")
+        if os.path.exists(p):
+            fisher_npzs.append(p)
+        elif required:
+            sys.exit(f"ERROR: not found: {p}")
 
-    for p in [npz_path] + fisher_npzs + [
-        os.path.join(eig_dir, "pca_eigenvalues_norm.npy"),
-        os.path.join(eig_dir, "lda_eigenvalues.npy"),
-    ]:
+    for p in [mse_npz_path, ce_npz_path]:
         if not os.path.exists(p):
-            sys.exit(f"ERROR: not found: {p}\n"
-                     "       Run compute_eigenvalues.py first if eigenvalue files are missing.")
+            sys.exit(f"ERROR: not found: {p}")
 
-    data = np.load(npz_path)
+    # Verify at least one PCA and one LDA eigenvalue file exists in eig_dir
+    pca_ok = any(os.path.exists(os.path.join(eig_dir, f))
+                 for f in ("pca_eigenvalues_norm.npy", "pca_eigenvalues.npy"))
+    lda_ok = any(os.path.exists(os.path.join(eig_dir, f))
+                 for f in ("lda_eigenvalues.npy", "lda_eigenvalues_norm.npy"))
+    if not pca_ok or not lda_ok:
+        sys.exit(f"ERROR: no PCA/LDA eigenvalue files found in {eig_dir}\n"
+                 "       Run compute_eigenvalues.py first if eigenvalue files are missing.")
 
-    # Merge all three Fisher npz files into one dict (later files override on key clash)
+    mse_data = dict(np.load(mse_npz_path))
+    ce_data  = dict(np.load(ce_npz_path))
+    print(f"[fig1] MSE data    : {mse_npz_path}")
+    print(f"[fig1] CE  data    : {ce_npz_path}")
+
+    # Merge all Fisher npz files into one dict (later files override on key clash)
     fisher_data = {}
     for p in fisher_npzs:
         fisher_data.update(dict(np.load(p)))
         print(f"[fig1] Fisher data : {p}")
 
     pca_norm, lda_evr = _load_eig(eig_dir)
-    print(f"[fig1] LAE/CE data : {npz_path}")
     print(f"[fig1] PCA eigs    : {pca_norm.shape}  LDA eigs: {lda_evr.shape}")
 
     fig_stamp = time.strftime("%Y_%m_%d__%H_%M_%S")
@@ -238,11 +328,11 @@ def main():
 
     # (row, col, models, data_dict, metric_suffix, n_plot, bg_vals, bar_color, bar_ylabel)
     panels = [
-        (0, 0, MSE_MODELS,    data,        "pca_cosine", N_PLOT_PCA, pca_norm, PCA_BAR_COLOR, "PCA eigenvectors"),
-        (0, 1, CE_MODELS,     data,        "pca_cosine", N_PLOT_PCA, None,     None,          None),
+        (0, 0, MSE_MODELS,    mse_data,    "pca_cosine", N_PLOT_PCA, pca_norm, PCA_BAR_COLOR, "PCA eigenvectors"),
+        (0, 1, CE_MODELS,     ce_data,     "pca_cosine", N_PLOT_PCA, None,     None,          None),
         (0, 2, FISHER_MODELS, fisher_data, "pca_cosine", N_PLOT_PCA, None,     None,          None),
-        (1, 0, MSE_MODELS,    data,        "lda_cosine", N_PLOT_LDA, lda_evr,  LDA_BAR_COLOR, "LDA eigenvectors"),
-        (1, 1, CE_MODELS,     data,        "lda_cosine", N_PLOT_LDA, None,     None,          None),
+        (1, 0, MSE_MODELS,    mse_data,    "lda_cosine", N_PLOT_LDA, lda_evr,  LDA_BAR_COLOR, "LDA eigenvectors"),
+        (1, 1, CE_MODELS,     ce_data,     "lda_cosine", N_PLOT_LDA, None,     None,          None),
         (1, 2, FISHER_MODELS, fisher_data, "lda_cosine", N_PLOT_LDA, None,     None,          None),
     ]
 
@@ -266,6 +356,9 @@ def main():
     axes[0, 2].legend(handles=LEGEND_HANDLES, loc="upper right",
                       frameon=True, fontsize=6, handlelength=1.8, borderpad=0.6)
 
+    if args.dataset:
+        fig.suptitle(f"Dataset: {args.dataset}", fontsize=8, y=1.01)
+
     fig.tight_layout(h_pad=1.0, w_pad=0.6)
 
     stem = save_fig(fig, "fig1_cosine_pca_lda_grid", fig_stamp)
@@ -274,7 +367,8 @@ def main():
     print(
         f"\nReminder: update figure registry in plans/ICMLWorkshop_figure_style_plan.md\n"
         f"  Stem            : {stem}\n"
-        f"  LAE/CE run      : {args.run}\n"
+        f"  MSE run         : {mse_run}\n"
+        f"  CE  run         : {ce_run}\n"
         f"  Fisher run      : {args.fisher_run}\n"
         f"  Date            : {time.strftime('%Y-%m-%d')}"
     )

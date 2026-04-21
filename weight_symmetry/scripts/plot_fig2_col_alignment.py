@@ -93,6 +93,8 @@ def main():
     parser.add_argument("--run", required=True,
                         help="Run folder name, e.g. exprmnt_2026_04_16__20_54_49")
     parser.add_argument("--results-root", default=None)
+    parser.add_argument("--dataset", default=None,
+                        help="Dataset name shown in figure suptitle (e.g. mnist, fashion_mnist)")
     args = parser.parse_args()
 
     results_root = args.results_root or DEFAULT_RESULTS_ROOT
@@ -214,6 +216,9 @@ def main():
     handles.append(Line2D([0], [0], color="#009E73", ls="--", lw=1.4))
     labels.append("FP MRL (pairwise sim.)")
     axR.legend(handles=handles, labels=labels, loc="upper right", frameon=True, fontsize=7)
+
+    if args.dataset:
+        fig.suptitle(f"Dataset: {args.dataset}", fontsize=8, y=1.01)
 
     fig.tight_layout()
 

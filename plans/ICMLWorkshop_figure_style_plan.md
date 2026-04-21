@@ -366,10 +366,10 @@ Tracks every paper figure: source experiment, run folder, and generated file. Up
 
 | Paper Fig | Description | Experiment | Source Run Folder | Generated File (stem) | Date Generated |
 |-----------|-------------|------------|-------------------|-----------------------|----------------|
-| Fig 1 | 2×3 cosine-sim grid: PCA row + LDA row × MSE/CE/Fisher cols | Exp 2 divergence (LAE/CE) + Exp 2 Fisher | LAE/CE: `exprmnt_2026_04_19__16_00_49/exprmnt_2026_04_20__13_46_30`; Fisher: `exprmnt_2026_04_20__01_31_36` | `fig1_cosine_pca_lda_grid_2026_04_20__13_49_06` | 2026-04-20 |
-| Fig 2 | Max cosine (left, + pairwise dashed) + mean principal angle (right), dual-axis | Exp 1 — PCA Subspace Recovery | `exprmnt_2026_04_16__20_54_49/exprmnt_2026_04_19__21_36_49` | `exp1_pca_recovery_2026_04_19__23_21_01` | 2026-04-19 |
+| Fig 1 | 2×3 cosine-sim grid: PCA row + LDA row × MSE/CE/Fisher cols | Exp 2 — Objective Specificity (MNIST) | MSE: `exprmnt_2026_04_20__21_33_52`; CE: `exprmnt_2026_04_20__21_35_38`; Fisher: `exprmnt_2026_04_20__21_52_46` | *(pending)* | — |
+| Fig 2 | Max cosine (left, + pairwise dashed) + mean principal angle (right), dual-axis | Exp 1 — PCA Recovery (Fashion-MNIST) | `exprmnt_2026_04_20__21_47_55` | *(pending)* | — |
 | Fig A1 | 4×4 t-SNE cluster grid, CE models, k=2,4,8,16 | Exp 2 divergence (CE) | `exprmnt_2026_04_19__16_00_49` | `figA1_cluster_ce_2026_04_20__16_02_43` | 2026-04-20 |
-| Fig A1B | 4×4 t-SNE cluster grid, Fisher models, k=2,4,8,16 | Exp 2 Fisher | `01_31_36` (fisher), `01_44_24` (fp_fisher), `11_33_48` (mrl+l1) | `figA1B_cluster_fisher_2026_04_20__16_19_44` | 2026-04-20 |
+| Fig A1B | 4×4 t-SNE cluster grid, Fisher models, k=2,4,8,16 | Exp 2 Fisher | `exprmnt_2026_04_20__01_31_36` (fisher), `exprmnt_2026_04_20__01_44_24` (fp_fisher), `exprmnt_2026_04_20__11_33_48` (mrl+l1 fisher) | `figA1B_cluster_fisher_2026_04_20__16_19_44` | 2026-04-20 |
 
 ---
 

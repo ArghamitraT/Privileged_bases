@@ -26,6 +26,8 @@ Usage:
 
     python weight_symmetry/experiments/exp2_objectivespecificity.py --fast
     python weight_symmetry/experiments/exp2_objectivespecificity.py
+    python weight_symmetry/experiments/exp2_objectivespecificity.py --dataset mnist
+    python weight_symmetry/experiments/exp2_objectivespecificity.py --dataset fashion_mnist
     python weight_symmetry/experiments/exp2_objectivespecificity.py --loss-family mse ce
     python weight_symmetry/experiments/exp2_objectivespecificity.py --loss-family fisher
     python weight_symmetry/experiments/exp2_objectivespecificity.py --loss-family fisher --sgd
@@ -69,52 +71,96 @@ from weight_symmetry.evaluation.metrics import (
 )
 
 # ==============================================================================
-# CONFIG
+# CONFIG — edit here to change the full run; use --fast for a quick smoke test
 # ==============================================================================
 EXPERIMENT_NOTE = (
-    "Merged exp2_divergence + exp2_fisher_loss into unified script. "
-    "All three loss families (MSE, CE, Fisher) controlled by --loss-family flag. "
-    "Single metrics_raw.npz per run covers all active families."
+    "Exp 2: fixed PrefixL1 CE metric — previous runs used untrained heads[k-1] "
+    "instead of the trained full-dim head W_d with flipped columns. "
+    "Now uses W_d[:, ::-1][:, :k] so both W and B are consistently flipped "
+    "before computing (W_k @ B_{1:k})^T. Re-running all datasets with --use-weights."
 )
 
-DATASET           = "synthetic"
-SYNTHETIC_VARIANT = "orderedBoth"
+# Dataset — edit DATASET to switch; argparse --dataset overrides at runtime
+#   "synthetic"          → orderedBoth synthetic (controlled PCA ⊥ LDA)
+#   "mnist"              → raw MNIST (784-dim), PCA-projected to P_PCA_PROJ
+#   "fashion_mnist"      → raw Fashion-MNIST, same projection
+#   "mnist_noise"        → MNIST PCA-projected + N_NOISE_DIMS noise dims prepended
+#   "fashion_mnist_noise"→ same on Fashion-MNIST
+#   "20newsgroups"       → TF-IDF TruncatedSVD, P_SVD output dim
+DATASET           = "fashion_mnist"
+SYNTHETIC_VARIANT = "orderedBoth"   # only used when DATASET == "synthetic"
 SEEDS             = [47]
-LOSS_FAMILIES     = ["mse", "ce", "fisher"]   # run all by default
+# LOSS_FAMILIES     = ["mse", "ce", "fisher"]   # run all by default
+LOSS_FAMILIES     = ["fisher"]   # run all by default
 
-# Per-family training settings — edit here, not in individual flags
-FAMILY_CFG = {
-    "mse": dict(
-        embed_dim      = 50,
-        epochs         = 500,
-        patience       = 50,
-        batch_size     = 256,
-        optimizer      = "adam",
-        standard_mrl_m = [5, 10, 25, 50],
-    ),
-    "ce": dict(
-        embed_dim      = 50,
-        epochs         = 500,
-        patience       = 50,
-        batch_size     = 256,
-        optimizer      = "adam",
-        standard_mrl_m = [5, 10, 25, 50],
-    ),
-    "fisher": dict(
-        embed_dim      = 19,       # = C-1; clamped to n_lda at runtime
-        epochs         = 10000,
-        patience       = 2000,
-        batch_size     = None,     # None → full training set
-        optimizer      = "adam",
-        standard_mrl_m = [5, 10, 15, 19],
-    ),
-}
 
+# Shared training hyperparameters
 LR                = 1e-3
 WEIGHT_DECAY      = 1e-4
 L1_LAMBDA         = 0.01
 NONUNIFORM_L2_LAM = 1.0
 FISHER_EPS        = 1e-4
+
+# Per-family epochs / patience / batch_size — edit these directly
+EPOCHS_MSE_CE     = 1000
+PATIENCE_MSE_CE   = 100
+BATCH_SIZE        = 256
+
+EPOCHS_FISHER     = 5000
+PATIENCE_FISHER   = 500
+BATCH_SIZE_FISHER = None   # None → full training set (exact scatter matrices)
+
+# EPOCHS_MSE_CE     = 5
+# PATIENCE_MSE_CE   = 5
+# BATCH_SIZE        = 256
+
+# EPOCHS_FISHER     = 5
+# PATIENCE_FISHER   = 5
+# BATCH_SIZE_FISHER = None   # None → full training set (exact scatter matrices)
+
+
+# ── Auto-configured from DATASET (do not edit below this line) ─────────────
+
+def _make_data_cfg(dataset):
+    """Real-data loader params — auto-set from DATASET."""
+    if dataset in ("mnist", "fashion_mnist"):
+        return dict(p_pca_proj=784, n_noise_dims=0, sigma_noise=5.0,
+                    p_svd=100, tfidf_max_features=10000)
+    elif dataset in ("mnist_noise", "fashion_mnist_noise"):
+        return dict(p_pca_proj=50, n_noise_dims=25, sigma_noise=5.0,
+                    p_svd=100, tfidf_max_features=10000)
+    elif dataset == "20newsgroups":
+        return dict(p_pca_proj=100, n_noise_dims=0, sigma_noise=5.0,
+                    p_svd=100, tfidf_max_features=10000)
+    else:  # synthetic — ignored at runtime
+        return dict(p_pca_proj=784, n_noise_dims=0, sigma_noise=5.0,
+                    p_svd=100, tfidf_max_features=10000)
+
+
+def _make_family_cfg(dataset):
+    """embed_dim and MRL prefix sizes — auto-set from DATASET.
+    Fisher embed_dim and standard_mrl_m are also clamped to n_lda at runtime."""
+    if dataset == "synthetic":
+        mse_ce = dict(embed_dim=50, epochs=EPOCHS_MSE_CE, patience=PATIENCE_MSE_CE,
+                      batch_size=BATCH_SIZE, optimizer="adam",
+                      standard_mrl_m=[5, 10, 25, 50])
+        fisher = dict(embed_dim=19, epochs=EPOCHS_FISHER, patience=PATIENCE_FISHER,
+                      batch_size=BATCH_SIZE_FISHER, optimizer="adam",
+                      standard_mrl_m=[5, 10, 15, 19])
+    else:
+        # mnist / fashion_mnist / *_noise / 20newsgroups
+        # embed_dim=32: consistent with Exp 1; Fisher clamped to n_lda=9 at runtime
+        mse_ce = dict(embed_dim=32, epochs=EPOCHS_MSE_CE, patience=PATIENCE_MSE_CE,
+                      batch_size=BATCH_SIZE, optimizer="adam",
+                      standard_mrl_m=[4, 8, 16, 32])
+        fisher = dict(embed_dim=32, epochs=EPOCHS_FISHER, patience=PATIENCE_FISHER,
+                      batch_size=BATCH_SIZE_FISHER, optimizer="adam",
+                      standard_mrl_m=[2, 4, 7, 9])  # n_lda = C-1 = 9 for MNIST
+    return {"mse": dict(mse_ce), "ce": dict(mse_ce), "fisher": fisher}
+
+
+DATA_CFG   = _make_data_cfg(DATASET)
+FAMILY_CFG = _make_family_cfg(DATASET)
 # ==============================================================================
 
 ALL_MODEL_CONFIGS = [
@@ -261,19 +307,13 @@ def train_family(family_mcs, data, global_cfg, fam_cfg, run_dir, seed, device):
 # ==============================================================================
 
 def compute_pca_probe_metrics(pca_dirs, lda_dirs, data, embed_dim):
-    from sklearn.linear_model import LogisticRegression
     from weight_symmetry.evaluation.metrics import subspace_angle
 
     d, n_lda = embed_dim, lda_dirs.shape[1]
-    X_tr = data.X_train.numpy()
-    X_te = data.X_test.numpy()
-    y_tr = data.y_train.numpy()
-    y_te = data.y_test.numpy()
 
     pca_angles, lda_angles = [], []
     pca_cosine, lda_cosine = [], []
     pca_paired, lda_paired = [], []
-    accuracies = []
 
     for k in range(1, d + 1):
         pca_angles.append(0.0)
@@ -289,41 +329,24 @@ def compute_pca_probe_metrics(pca_dirs, lda_dirs, data, embed_dim):
             lda_angles.append(float("nan"))
             lda_cosine.append(float("nan"))
             lda_paired.append(float("nan"))
-        Z_tr = X_tr @ pca_dirs[:, :k]
-        Z_te = X_te @ pca_dirs[:, :k]
-        clf  = LogisticRegression(max_iter=300, n_jobs=1)
-        clf.fit(Z_tr, y_tr)
-        accuracies.append(float(clf.score(Z_te, y_te)))
 
     return dict(prefix_sizes=list(range(1, d+1)), n_lda=n_lda,
                 pca_angles=pca_angles, lda_angles=lda_angles,
                 pca_cosine=pca_cosine, lda_cosine=lda_cosine,
-                pca_paired=pca_paired, lda_paired=lda_paired,
-                accuracies=accuracies)
+                pca_paired=pca_paired, lda_paired=lda_paired)
 
 
 def compute_lda_baseline_metrics(lda_dirs, data, embed_dim):
-    from sklearn.linear_model import LogisticRegression
-
     d, n_lda = embed_dim, lda_dirs.shape[1]
-    X_tr = data.X_train.numpy().astype(np.float64)
-    X_te = data.X_test.numpy().astype(np.float64)
-    y_tr = data.y_train.numpy()
-    y_te = data.y_test.numpy()
 
-    lda_angles, lda_cosine, accuracies = [], [], []
+    lda_angles, lda_cosine = [], []
     for k in range(1, d + 1):
         lda_angles.append(0.0)
         L_k = lda_dirs[:, :k]
         lda_cosine.append(column_alignment(L_k, L_k))
-        Z_tr = X_tr @ lda_dirs[:, :k]
-        Z_te = X_te @ lda_dirs[:, :k]
-        clf  = LogisticRegression(max_iter=300, n_jobs=1)
-        clf.fit(Z_tr, y_tr)
-        accuracies.append(float(clf.score(Z_te, y_te)))
 
     return dict(prefix_sizes=list(range(1, d+1)), n_lda=n_lda,
-                lda_angles=lda_angles, lda_cosine=lda_cosine, accuracies=accuracies)
+                lda_angles=lda_angles, lda_cosine=lda_cosine)
 
 
 def compute_lda_eigenvalues(data):
@@ -331,6 +354,63 @@ def compute_lda_eigenvalues(data):
     lda = LinearDiscriminantAnalysis()
     lda.fit(data.X_train.numpy(), data.y_train.numpy())
     return lda.explained_variance_ratio_.astype(np.float64)
+
+
+def _add_eigenvalues(dataset_info, X_tr, y_tr, seed):
+    """Compute PCA variances and LDA explained-variance ratios; add to dataset_info."""
+    from sklearn.decomposition import PCA as SklearnPCA
+    from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA_sk
+
+    n_pca = min(200, X_tr.shape[1], len(X_tr) - 1)
+    pca_sk = SklearnPCA(n_components=n_pca, random_state=seed)
+    pca_sk.fit(X_tr.astype(np.float32))
+    dataset_info["pca_eigenvalues"]     = pca_sk.explained_variance_.tolist()
+    dataset_info["pca_eigenvalues_sum"] = float(pca_sk.explained_variance_.sum())
+
+    lda_sk = LDA_sk()
+    lda_sk.fit(X_tr, y_tr)
+    dataset_info["lda_eigenvalues_norm"]     = lda_sk.explained_variance_ratio_.tolist()
+    dataset_info["lda_eigenvalues_norm_sum"] = float(lda_sk.explained_variance_ratio_.sum())
+
+
+def _load_data_and_directions(dataset, seed, data_cfg, synthetic_variant):
+    """Return (data, pca_dirs, lda_dirs, dataset_info) for any supported dataset."""
+    if dataset == "synthetic":
+        vparams      = SYNTHETIC_VARIANTS[synthetic_variant]
+        data         = load_data(dataset, seed=seed, synthetic_variant=synthetic_variant)
+        raw          = load_synthetic(seed=seed, **vparams)
+        pca_dirs     = raw["pca_dirs"].astype(np.float64)
+        lda_dirs     = raw["lda_dirs"].astype(np.float64)
+        dataset_info = dict(raw["params"])
+        _add_eigenvalues(dataset_info, data.X_train.numpy().astype(np.float64),
+                         data.y_train.numpy(), seed)
+        return data, pca_dirs, lda_dirs, dataset_info
+
+    if dataset in ("20newsgroups", "mnist_noise", "fashion_mnist_noise"):
+        data, pca_dirs, lda_dirs, dataset_info = load_data_with_directions(
+            dataset, seed=seed,
+            p_pca_proj=data_cfg["p_pca_proj"],
+            n_noise_dims=data_cfg["n_noise_dims"],
+            sigma_noise=data_cfg["sigma_noise"],
+            p_svd=data_cfg["p_svd"],
+            tfidf_max_features=data_cfg["tfidf_max_features"],
+        )
+        _add_eigenvalues(dataset_info, data.X_train.numpy().astype(np.float64),
+                         data.y_train.numpy(), seed)
+        return data, pca_dirs, lda_dirs, dataset_info
+
+    # mnist / fashion_mnist: load raw, then compute PCA + LDA from training split
+    from weight_symmetry.data.loader import _compute_pca_lda_directions
+    data = load_data(dataset, seed=seed)
+    X_tr = data.X_train.numpy().astype(np.float64)
+    y_tr = data.y_train.numpy()
+    pca_dirs, lda_dirs = _compute_pca_lda_directions(X_tr, y_tr, n_components=data.input_dim)
+    dataset_info = dict(
+        dataset=dataset, p=data.input_dim, C=data.n_classes, n_lda=data.n_classes - 1,
+        n_train=len(X_tr),
+    )
+    _add_eigenvalues(dataset_info, X_tr, y_tr, seed)
+    return data, pca_dirs, lda_dirs, dataset_info
 
 
 def compute_paired_cosines_lda(model, lda_dirs, flip_dims=False):
@@ -392,9 +472,18 @@ def plot_training_curves(all_histories, active_mcs, run_dir, fig_stamp):
     print(f"[exp2] Saved {path}")
 
 
-def plot_subspace_metrics(all_metrics, baselines, active_mcs, run_dir, fig_stamp,
-                          family_embed_dim):
-    """One 2×2 figure per family: (angle / cosine) × (PCA / LDA)."""
+def plot_family_subspace(all_metrics, baselines, active_mcs, run_dir, fig_stamp,
+                         family_embed_dim):
+    """
+    Three separate figures (one per loss family), each with 2 panels:
+      Left  — mean principal angle  (°) vs prefix size k
+      Right — max cosine similarity     vs prefix size k
+    Reference direction: PCA for MSE; LDA for CE and Fisher.
+    """
+    # Theoretically predicted reference per family
+    FAMILY_REF  = {"mse": "pca",   "ce": "lda",      "fisher": "lda"}
+    FAMILY_BKEY = {"mse": "PCA + probe", "ce": "LDA baseline", "fisher": "LDA baseline"}
+
     families = list(dict.fromkeys(mc["family"] for mc in active_mcs))
 
     for fam in families:
@@ -402,61 +491,52 @@ def plot_subspace_metrics(all_metrics, baselines, active_mcs, run_dir, fig_stamp
         embed_dim = family_embed_dim[fam]
         baseline  = baselines.get(fam, {})
         n_lda     = int(baseline.get("n_lda", embed_dim))
+        ref       = FAMILY_REF.get(fam, "pca")
+        bkey      = FAMILY_BKEY.get(fam, "PCA + probe")
+        n_pts     = embed_dim if ref == "pca" else n_lda
+        xs        = list(range(1, n_pts + 1))
 
-        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-        refs = [("pca", 0), ("lda", 1)]
+        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
 
-        for ref, col in refs:
-            n_pts = embed_dim if ref == "pca" else n_lda
-            xs    = list(range(1, n_pts + 1))
-            bkey  = "PCA + probe" if ref == "pca" else "LDA baseline"
+        for col, metric in enumerate(["angles", "cosine"]):
+            ax  = axes[col]
+            key = f"{ref}_{metric}"
 
-            for row, metric in enumerate(["angles", "cosine"]):
-                ax  = axes[row, col]
-                key = f"{ref}_{metric}"
+            for mc in fam_mcs:
+                tag, label = mc["tag"], mc["label"]
+                if tag not in all_metrics or not all_metrics[tag]:
+                    continue
+                n_seeds = len(all_metrics[tag])
+                try:
+                    mat = np.array([[all_metrics[tag][s][key][k] for k in range(n_pts)]
+                                    for s in range(n_seeds)])
+                    mat = np.where(mat < 0, np.nan, mat)
+                except (KeyError, IndexError):
+                    continue
+                mean = np.nanmean(mat, axis=0)
+                std  = np.nanstd(mat,  axis=0)
+                s    = _style(label)
+                ax.plot(xs, mean, label=label, **s)
+                ax.fill_between(xs, mean - std, mean + std, alpha=0.15, color=s["color"])
 
-                for mc in fam_mcs:
-                    tag, label = mc["tag"], mc["label"]
-                    if tag not in all_metrics or not all_metrics[tag]:
-                        continue
-                    n_seeds = len(all_metrics[tag])
-                    try:
-                        if ref == "pca":
-                            mat = np.array([all_metrics[tag][s][key]
-                                            for s in range(n_seeds)])
-                            mat = mat[:, :n_pts]
-                        else:
-                            mat = np.array([[all_metrics[tag][s][key][k]
-                                             for k in range(n_lda)]
-                                            for s in range(n_seeds)])
-                            mat = np.where(mat < 0, np.nan, mat)
-                    except (KeyError, IndexError):
-                        continue
-                    mean = np.nanmean(mat, axis=0)
-                    std  = np.nanstd(mat,  axis=0)
-                    s    = _style(label)
-                    ax.plot(xs, mean, label=label, **s)
-                    ax.fill_between(xs, mean - std, mean + std, alpha=0.15, color=s["color"])
+            if key in baseline:
+                bvals = np.array(baseline[key])
+                bvals = np.where(bvals < 0, np.nan, bvals)[:n_pts]
+                if not np.all(np.isnan(bvals)):
+                    ax.plot(xs, bvals, label=bkey, **_style(bkey))
 
-                # Baseline line
-                if key in baseline:
-                    bvals = np.array(baseline[key])
-                    bvals = np.where(bvals < 0, np.nan, bvals)
-                    bvals = bvals[:n_pts]
-                    if not np.all(np.isnan(bvals)):
-                        ax.plot(xs, bvals, label=bkey, **_style(bkey))
+            ylabel = "Mean principal angle (°)" if metric == "angles" else "Max cosine similarity"
+            ax.set_xlabel("Prefix size k")
+            ax.set_ylabel(ylabel)
+            ax.set_title(f"{fam.upper()} — {'Angle' if metric == 'angles' else 'Cosine'} to {ref.upper()}")
+            ax.legend(fontsize=7)
+            ax.grid(True, alpha=0.3)
 
-                ylabel = "Mean principal angle (°)" if metric == "angles" else "Max cosine similarity"
-                ax.set_xlabel("Prefix size k")
-                ax.set_ylabel(ylabel)
-                ax.set_title(f"{fam.upper()} — {'Angle' if metric == 'angles' else 'Cosine'} to {ref.upper()}")
-                ax.legend(fontsize=7)
-                ax.grid(True, alpha=0.3)
-
-        plt.tight_layout()
-        path = os.path.join(run_dir, f"subspace_metrics_{fam}{fig_stamp}.png")
-        plt.savefig(path, dpi=150)
-        plt.close()
+        fig.suptitle(f"{fam.upper()} family — subspace alignment to {ref.upper()}", fontsize=9)
+        fig.tight_layout()
+        path = os.path.join(run_dir, f"subspace_{fam}{fig_stamp}.png")
+        fig.savefig(path, dpi=150)
+        plt.close(fig)
         print(f"[exp2] Saved {path}")
 
 
@@ -749,6 +829,8 @@ def main():
     parser.add_argument("--loss-family", nargs="+", default=None,
                         choices=["mse", "ce", "fisher"], metavar="FAMILY",
                         help="Which families to run (default: all)")
+    parser.add_argument("--dataset",     type=str, default=None,
+                        help="Override DATASET config (e.g. synthetic, mnist, fashion_mnist)")
     parser.add_argument("--use-weights", type=str, default=None, metavar="FOLDER",
                         help="Reload .pt files, recompute metrics, regenerate plots")
     parser.add_argument("--sgd",         action="store_true",
@@ -757,9 +839,14 @@ def main():
 
     t_start = time.time()
 
+    # --dataset overrides CONFIG-level DATASET; re-derive data and family configs
+    dataset     = args.dataset or DATASET
+    data_cfg    = _make_data_cfg(dataset)
+    family_cfg_ = _make_family_cfg(dataset)
+
     active_families = args.loss_family or LOSS_FAMILIES
     active_mcs      = [mc for mc in ALL_MODEL_CONFIGS if mc["family"] in active_families]
-    fam_cfg         = {fam: dict(FAMILY_CFG[fam]) for fam in active_families}
+    fam_cfg         = {fam: dict(family_cfg_[fam]) for fam in active_families}
     if args.sgd and "fisher" in fam_cfg:
         fam_cfg["fisher"]["optimizer"] = "sgd"
 
@@ -779,7 +866,7 @@ def main():
 
     global_cfg = dict(
         experiment_name   = "exp2_objectivespecificity",
-        dataset           = DATASET,
+        dataset           = dataset,
         synthetic_variant = SYNTHETIC_VARIANT,
         seeds             = seeds,
         active_families   = active_families,
@@ -812,14 +899,12 @@ def main():
         seeds           = saved_cfg.get("seeds", seeds)
         active_families = args.loss_family or saved_cfg.get("active_families", active_families)
         active_mcs      = [mc for mc in ALL_MODEL_CONFIGS if mc["family"] in active_families]
-        fam_cfg         = {fam: dict(FAMILY_CFG[fam]) for fam in active_families}
+        saved_dataset   = saved_cfg.get("dataset", dataset)
+        fam_cfg         = {fam: dict(_make_family_cfg(saved_dataset)[fam]) for fam in active_families}
 
-        vparams  = SYNTHETIC_VARIANTS[SYNTHETIC_VARIANT]
-        data     = load_data(DATASET, seed=seeds[0], synthetic_variant=SYNTHETIC_VARIANT)
-        raw      = load_synthetic(seed=seeds[0], **vparams)
-        pca_dirs = raw["pca_dirs"].astype(np.float64)
-        lda_dirs = raw["lda_dirs"].astype(np.float64)
-        n_lda    = lda_dirs.shape[1]
+        data, pca_dirs, lda_dirs, _ = _load_data_and_directions(
+            saved_dataset, seeds[0], _make_data_cfg(saved_dataset), SYNTHETIC_VARIANT)
+        n_lda = lda_dirs.shape[1]
         if "fisher" in fam_cfg:
             fam_cfg["fisher"]["embed_dim"] = min(fam_cfg["fisher"]["embed_dim"], n_lda)
 
@@ -841,15 +926,12 @@ def main():
                 ]
 
         all_metrics        = {mc["tag"]: [] for mc in active_mcs}
-        all_accuracies     = {mc["tag"]: [] for mc in active_mcs}
         all_paired_cosines = {mc["tag"]: [] for mc in active_mcs if mc["family"] == "fisher"}
 
         print("[exp2] Recomputing metrics from saved weights ...")
         for seed in seeds:
-            seed_raw  = load_synthetic(seed=seed, **vparams)
-            seed_pca  = seed_raw["pca_dirs"].astype(np.float64)
-            seed_lda  = seed_raw["lda_dirs"].astype(np.float64)
-            seed_data = load_data(DATASET, seed=seed, synthetic_variant=SYNTHETIC_VARIANT)
+            seed_data, seed_pca, seed_lda, _ = _load_data_and_directions(
+                saved_dataset, seed, _make_data_cfg(saved_dataset), SYNTHETIC_VARIANT)
             for mc in active_mcs:
                 tag       = mc["tag"]
                 fam       = mc["family"]
@@ -865,9 +947,6 @@ def main():
                 m = compute_encoder_subspace_metrics(
                     model, seed_pca, seed_lda, flip_dims=flip, model_type=mc["model_type"])
                 all_metrics[tag].append(m)
-                a = compute_prefix_accuracy(
-                    model, seed_data, device, mc["model_type"], flip_dims=flip)
-                all_accuracies[tag].append(a)
                 if fam == "fisher":
                     all_paired_cosines[tag].append(
                         compute_paired_cosines_lda(model, seed_lda, flip_dims=flip))
@@ -880,7 +959,7 @@ def main():
         os.makedirs(run_dir, exist_ok=True)
         fig_stamp = time.strftime("_%Y_%m_%d__%H_%M_%S")
 
-        _run_plots_and_save(all_metrics, all_histories, all_accuracies, all_paired_cosines,
+        _run_plots_and_save(all_metrics, all_histories, all_paired_cosines,
                             baselines, lda_eigenvalues, active_mcs, active_families,
                             fam_cfg, family_embed_dim, run_dir, fig_stamp, saved_cfg,
                             dataset_info={})
@@ -897,13 +976,9 @@ def main():
     fig_stamp = time.strftime("_%Y_%m_%d__%H_%M_%S")
     save_config(global_cfg, run_dir)
 
-    vparams  = SYNTHETIC_VARIANTS[SYNTHETIC_VARIANT]
-    print(f"\n[exp2] Loading {DATASET} (variant={SYNTHETIC_VARIANT}) ...")
-    data     = load_data(DATASET, seed=seeds[0], synthetic_variant=SYNTHETIC_VARIANT)
-    raw_data = load_synthetic(seed=seeds[0], **vparams)
-    pca_dirs = raw_data["pca_dirs"].astype(np.float64)
-    lda_dirs = raw_data["lda_dirs"].astype(np.float64)
-    dataset_info = dict(raw_data["params"])
+    print(f"\n[exp2] Loading {dataset} ...")
+    data, pca_dirs, lda_dirs, dataset_info = _load_data_and_directions(
+        dataset, seeds[0], data_cfg, SYNTHETIC_VARIANT)
 
     n_lda = lda_dirs.shape[1]
     if "fisher" in fam_cfg:
@@ -911,11 +986,21 @@ def main():
     family_embed_dim = {fam: fam_cfg[fam]["embed_dim"] for fam in active_families}
 
     np.savez(os.path.join(run_dir, "directions.npz"), pca_dirs=pca_dirs, lda_dirs=lda_dirs)
+    if "pca_eigenvalues" in dataset_info:
+        np.save(os.path.join(run_dir, "pca_eigenvalues.npy"),
+                np.array(dataset_info["pca_eigenvalues"]))
+        np.save(os.path.join(run_dir, "lda_eigenvalues_norm.npy"),
+                np.array(dataset_info["lda_eigenvalues_norm"]))
+        print(f"[exp2] PCA eigenvalues (top-5): "
+              f"{[f'{v:.3f}' for v in dataset_info['pca_eigenvalues'][:5]]}  "
+              f"sum(top-200)={dataset_info['pca_eigenvalues_sum']:.2f}")
+        print(f"[exp2] LDA eigenvalues (norm):  "
+              f"{[f'{v:.4f}' for v in dataset_info['lda_eigenvalues_norm']]}  "
+              f"sum={dataset_info['lda_eigenvalues_norm_sum']:.6f}")
     save_experiment_description(global_cfg, run_dir, active_families, fam_cfg, dataset_info)
 
     all_histories      = {mc["tag"]: [] for mc in active_mcs}
     all_metrics        = {mc["tag"]: [] for mc in active_mcs}
-    all_accuracies     = {mc["tag"]: [] for mc in active_mcs}
     all_paired_cosines = {mc["tag"]: [] for mc in active_mcs if mc["family"] == "fisher"}
 
     for seed_idx, seed in enumerate(seeds):
@@ -923,10 +1008,8 @@ def main():
         np.random.seed(seed)
         torch.manual_seed(seed)
 
-        seed_data = load_data(DATASET, seed=seed, synthetic_variant=SYNTHETIC_VARIANT)
-        seed_raw  = load_synthetic(seed=seed, **vparams)
-        seed_pca  = seed_raw["pca_dirs"].astype(np.float64)
-        seed_lda  = seed_raw["lda_dirs"].astype(np.float64)
+        seed_data, seed_pca, seed_lda, _ = _load_data_and_directions(
+            dataset, seed, data_cfg, SYNTHETIC_VARIANT)
 
         for fam in active_families:
             fam_mcs = [mc for mc in active_mcs if mc["family"] == fam]
@@ -941,22 +1024,18 @@ def main():
                 m = compute_encoder_subspace_metrics(
                     model, seed_pca, seed_lda, flip_dims=flip, model_type=mc["model_type"])
                 all_metrics[tag].append(m)
-                a = compute_prefix_accuracy(
-                    model, seed_data, device, mc["model_type"], flip_dims=flip)
-                all_accuracies[tag].append(a)
                 if fam == "fisher":
                     all_paired_cosines[tag].append(
                         compute_paired_cosines_lda(model, seed_lda, flip_dims=flip))
-                ed = fam_cfg[fam]["embed_dim"]
+                ed   = fam_cfg[fam]["embed_dim"]
                 n_av = min(m["n_lda"], len(m["lda_cosine"]))
                 print(f"    [{tag}] PCA cos@{ed}: {m['pca_cosine'][-1]:.3f}  "
-                      f"LDA cos@{n_av}: {m['lda_cosine'][n_av-1]:.3f}  "
-                      f"acc@{ed}: {a[-1]:.3f}")
+                      f"LDA cos@{n_av}: {m['lda_cosine'][n_av-1]:.3f}")
 
     baselines       = _compute_baselines(active_families, fam_cfg, pca_dirs, lda_dirs, data)
     lda_eigenvalues = compute_lda_eigenvalues(data) if "fisher" in active_families else None
 
-    _run_plots_and_save(all_metrics, all_histories, all_accuracies, all_paired_cosines,
+    _run_plots_and_save(all_metrics, all_histories, all_paired_cosines,
                         baselines, lda_eigenvalues, active_mcs, active_families,
                         fam_cfg, family_embed_dim, run_dir, fig_stamp, global_cfg,
                         dataset_info)
@@ -980,21 +1059,20 @@ def _compute_baselines(active_families, fam_cfg, pca_dirs, lda_dirs, data):
     return baselines
 
 
-def _run_plots_and_save(all_metrics, all_histories, all_accuracies, all_paired_cosines,
+def _run_plots_and_save(all_metrics, all_histories, all_paired_cosines,
                         baselines, lda_eigenvalues, active_mcs, active_families,
                         fam_cfg, family_embed_dim, run_dir, fig_stamp, cfg, dataset_info):
-    save_raw_data(all_metrics, all_histories, all_accuracies, baselines, run_dir, active_mcs)
+    save_raw_data(all_metrics, all_histories, {}, baselines, run_dir, active_mcs)
     print("\n[exp2] Generating plots ...")
     plot_training_curves(all_histories, active_mcs, run_dir, fig_stamp)
-    plot_subspace_metrics(all_metrics, baselines, active_mcs, run_dir, fig_stamp, family_embed_dim)
-    plot_prefix_accuracy(all_accuracies, baselines, active_mcs, run_dir, fig_stamp, family_embed_dim)
+    plot_family_subspace(all_metrics, baselines, active_mcs, run_dir, fig_stamp, family_embed_dim)
     if "mse" in active_families and "mse" in baselines:
         plot_paired_cosines_pca(all_metrics, baselines["mse"], active_mcs, run_dir, fig_stamp,
                                 fam_cfg["mse"]["embed_dim"])
     if "fisher" in active_families and lda_eigenvalues is not None:
         plot_ordered_lda_recovery(all_paired_cosines, lda_eigenvalues, active_mcs,
                                   run_dir, fig_stamp)
-    save_results_summary(all_metrics, all_accuracies, baselines, run_dir, active_mcs, family_embed_dim)
+    save_results_summary(all_metrics, {}, baselines, run_dir, active_mcs, family_embed_dim)
     if dataset_info:
         save_experiment_description(cfg, run_dir, active_families, fam_cfg, dataset_info)
 

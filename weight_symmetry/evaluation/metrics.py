@@ -186,6 +186,7 @@ def compute_encoder_subspace_metrics(
     lda_dirs: np.ndarray,
     flip_dims: bool = False,
     model_type: str = "lae",
+    flip_ce_head: bool = False,
 ) -> Dict[str, list]:
     """
     For each prefix size k = 1..d, compute subspace angle and cosine similarity
@@ -216,8 +217,10 @@ def compute_encoder_subspace_metrics(
         model      : trained LinearAE or LinearAEWithHeads
         pca_dirs   : (p, n_pca) PCA eigenvectors from training data
         lda_dirs   : (p, n_lda) LDA discriminant directions from training data
-        flip_dims  : reverse column order (for PrefixL1 models)
-        model_type : "lae" | "lae_heads" | "lae_fisher"
+        flip_dims    : reverse column order (for PrefixL1 models)
+        model_type   : "lae" | "lae_heads" | "lae_fisher"
+        flip_ce_head : (lae_heads + flip_dims only) if True, use W_d[:,::-1][:,:k]
+                       instead of untrained heads[k-1]. Default False.
 
     Returns:
         dict with keys:
@@ -243,11 +246,20 @@ def compute_encoder_subspace_metrics(
         if flip_dims:
             A = np.ascontiguousarray(A[:, ::-1])
     elif model_type == "lae_heads":
-        # Pre-extract head weights: W_k ∈ R^{C×k} for k=1..d
-        head_weights = [
-            model.heads[k - 1].weight.detach().cpu().numpy().astype(np.float64)
-            for k in range(1, d + 1)
-        ]
+        if flip_dims and flip_ce_head:
+            # PrefixL1CELoss only trains heads[-1] (full-dim head). Flip its columns
+            # to match the flipped B_T, then slice the first k for each prefix size.
+            # heads[k-1] for k < d are untrained; using a slice of W_d is the only
+            # meaningful option.
+            W_d = model.heads[-1].weight.detach().cpu().numpy().astype(np.float64)  # (C, d)
+            W_d_flipped = np.ascontiguousarray(W_d[:, ::-1])                        # (C, d)
+            head_weights = [W_d_flipped[:, :k] for k in range(1, d + 1)]
+        else:
+            # Pre-extract head weights: W_k ∈ R^{C×k} for k=1..d
+            head_weights = [
+                model.heads[k - 1].weight.detach().cpu().numpy().astype(np.float64)
+                for k in range(1, d + 1)
+            ]
     # lae_fisher: uses B_T (encoder rows) already extracted above
 
     prefix_sizes = []

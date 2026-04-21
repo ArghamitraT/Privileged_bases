@@ -71,7 +71,7 @@ from weight_symmetry.evaluation.metrics import (
 # ==============================================================================
 # CONFIG — edit here for full runs; --fast overrides below in main()
 # ==============================================================================
-DATASET       = "mnist"          # "mnist" or "fashion_mnist"
+DATASET       = "fashion_mnist"         # "mnist" or "fashion_mnist"
 EMBED_DIM     = 32               # 16 or 32
 EPOCHS        = 5000
 PATIENCE      = 500
@@ -92,7 +92,7 @@ STANDARD_MRL_M_16 = [2, 4, 8, 16]
 # EXPERIMENT NOTE — fill in manually to describe this run's motivation/changes
 # Printed at the top of experiment_description.log
 # ------------------------------------------------------------------------------
-EXPERIMENT_NOTE = "Increased to 10k epochs (patience 500) to improve PCA recovery on MNIST — previous 500-epoch run showed degraded column alignment at larger prefix sizes due to near-degenerate eigenvalues."
+EXPERIMENT_NOTE = "Increased to 5k epochs (patience 500), FMNIST, cancelled the previous run abruptly"
 # ==============================================================================
 
 
