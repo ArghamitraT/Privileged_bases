@@ -370,6 +370,8 @@ Tracks every paper figure: source experiment, run folder, and generated file. Up
 | Fig 2 | Max cosine (left, + pairwise dashed) + mean principal angle (right), dual-axis | Exp 1 — PCA Recovery (Fashion-MNIST) | `exprmnt_2026_04_20__21_47_55` | *(pending)* | — |
 | Fig A1 | 4×4 t-SNE cluster grid, CE models, k=2,4,8,16 | Exp 2 divergence (CE) | `exprmnt_2026_04_19__16_00_49` | `figA1_cluster_ce_2026_04_20__16_02_43` | 2026-04-20 |
 | Fig A1B | 4×4 t-SNE cluster grid, Fisher models, k=2,4,8,16 | Exp 2 Fisher | `exprmnt_2026_04_20__01_31_36` (fisher), `exprmnt_2026_04_20__01_44_24` (fp_fisher), `exprmnt_2026_04_20__11_33_48` (mrl+l1 fisher) | `figA1B_cluster_fisher_2026_04_20__16_19_44` | 2026-04-20 |
+| Fig Clf | 2×3 classification figure: mean/var/probe bars, Eval-2 line, method-agreement lines | exp_clf.py (classification) | `exprmnt_2026_04_22__15_40_00` | *(pending)* | — |
+| Fig PCALDA | 2×2 PCA/LDA cosine-sim grid: synthetic row + Fashion-MNIST row × PCA/LDA cols | Exp 2 (synthetic) + Exp 1 (Fashion-MNIST) | synth: `exprmnt_2026_04_19__16_00_49/exprmnt_2026_04_20__13_46_30`; fp_fisher: `exprmnt_2026_04_20__01_44_24`; extra_fisher: `exprmnt_2026_04_20__11_33_48`; fmnist: `exprmnt_2026_04_20__22_41_23`; fmnist_fisher: `exprmnt_2026_04_21__07_47_27` | *(pending)* | — |
 
 ---
 
