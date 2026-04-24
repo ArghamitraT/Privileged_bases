@@ -31,11 +31,14 @@ PrefixL1 note:
 Conda environment: mrl_env
 
 Usage:
-    python experiments/exp14_two_eval_compare.py --fast             # smoke test (digits, 5 epochs)
-    python experiments/exp14_two_eval_compare.py                    # full run (MNIST, embed_dim from CONFIG)
-    python experiments/exp14_two_eval_compare.py --embed-dim 16     # full run, embed_dim=16
-    python experiments/exp14_two_eval_compare.py --embed-dim 32     # full run, embed_dim=32
-    python experiments/exp14_two_eval_compare.py --embed-dim 64     # full run, embed_dim=64
+    python experiments/exp14_two_eval_compare.py --fast                         # smoke test (digits, 5 epochs)
+    python experiments/exp14_two_eval_compare.py                                # full run (MNIST, embed_dim from CONFIG)
+    python experiments/exp14_two_eval_compare.py --embed-dim 16                 # full run, embed_dim=16
+    python experiments/exp14_two_eval_compare.py --embed-dim 32                 # full run, embed_dim=32
+    python experiments/exp14_two_eval_compare.py --embed-dim 64                 # full run, embed_dim=64
+    python experiments/exp14_two_eval_compare.py --dataset cd34                 # CD34 multiome, sweep [8, 16]
+    python experiments/exp14_two_eval_compare.py --dataset cd34 --embed-dim 8   # CD34, single dim
+    python experiments/exp14_two_eval_compare.py --dataset cd34 --fast          # CD34 smoke test
 """
 
 import os
@@ -72,22 +75,38 @@ from experiments.exp8_dim_importance import compute_importance_scores, compute_m
 
 # ==============================================================================
 # CONFIG — edit here to change the full run; use --fast for a quick smoke test
+# CURRENT RUN: CD34 multiome, input=2000 HVGs → hidden=256 → embed ∈ {8, 16}.
+# Switch DATASET to "mnist" (or pass --dataset mnist) to use MNIST_* overrides.
 # ==============================================================================
-DATASET           = "mnist"
-EMBED_DIMS        = [16]     # sweep over all; --embed-dim overrides
+DATASET           = "cd34"       # "cd34" or "mnist"  (CLI --dataset overrides)
+EMBED_DIMS        = [8, 16]      # sweep; --embed-dim overrides
 HIDDEN_DIM        = 256
 HEAD_MODE         = "shared_head"
-EPOCHS            = 20
+EPOCHS            = 30           # 15 is sized for CD34; MNIST override below
 PATIENCE          = 5
 LR                = 1e-3
 BATCH_SIZE        = 128
 WEIGHT_DECAY      = 1e-4
 SEED              = 42
 L1_LAMBDA         = 0.05
-MAX_LR_SAMPLES    = 10_000   # Eval 1: subsample cap for fresh LR fits
-MAX_1NN_DB_E1     = 10_000   # Eval 1: subsample cap for 1-NN database
-MAX_PROBE_SAMPLES = 2_000    # per-dim probe accuracy subsample (both evals)
+MAX_LR_SAMPLES    = 10_000       # Eval 1: subsample cap for fresh LR fits
+MAX_1NN_DB_E1     = 10_000       # Eval 1: subsample cap for 1-NN database
+MAX_PROBE_SAMPLES = 2_000        # per-dim probe accuracy subsample (both evals)
 # Eval 2: 1-NN uses full z_train (max_db_samples=None); linear uses trained W directly
+
+# --- CD34-specific data loading (used when DATASET == "cd34") ----------------
+# CD34 is small (~6.9k cells, 8 cell types). With ~4.8k train cells both Eval 1
+# and Eval 2 1-NN databases collapse to the same full set — the linear-accuracy
+# gap is the meaningful signal on CD34.
+CD34_DATA_PATH     = os.path.join(os.environ["HOME"], "Mat_embedding_hyperbole",
+                                  "data", "cd34_multiome",
+                                  "GSE200046_cd34_multiome_rna.h5ad")
+CD34_N_HVG         = 2000        # highly variable genes used as input features
+CD34_RECOMPUTE_HVG = False       # False: use h5ad precomputed HVGs; True: recompute via scanpy
+
+# --- MNIST overrides (used when DATASET == "mnist") --------------------------
+MNIST_EMBED_DIMS   = [16]
+MNIST_EPOCHS       = 20
 # ==============================================================================
 
 
@@ -589,16 +608,20 @@ def save_results_summary(eval1_linear: dict, eval2_linear: dict,
 
 def run_one_dim(embed_dim: int, data, y_train_np: np.ndarray, y_test_np: np.ndarray,
                 dim_dir: str, fig_stamp: str, fast: bool,
-                max_lr_samples: int, max_1nn_e1: int, max_probe_samples: int):
-    """Train + evaluate both models for a single embed_dim. Save all outputs to dim_dir."""
+                max_lr_samples: int, max_1nn_e1: int, max_probe_samples: int,
+                dataset_name: str, epochs: int, include_dense_mrl: bool):
+    """Train + evaluate models for a single embed_dim. Save all outputs to dim_dir.
+
+    include_dense_mrl=False drops Dense MRL (controlled by --no-dense-mrl).
+    """
 
     cfg = ExpConfig(
-        dataset=DATASET if not fast else "digits",
+        dataset=dataset_name,
         embed_dim=embed_dim,
         hidden_dim=128 if fast else HIDDEN_DIM,
         head_mode=HEAD_MODE,
         eval_prefixes=list(range(1, embed_dim + 1)),
-        lr=LR, epochs=5 if fast else EPOCHS,
+        lr=LR, epochs=epochs,
         batch_size=BATCH_SIZE, patience=3 if fast else PATIENCE,
         weight_decay=WEIGHT_DECAY, seed=SEED, l1_lambda=L1_LAMBDA,
         experiment_name="exp14_two_eval_compare",
@@ -608,10 +631,12 @@ def run_one_dim(embed_dim: int, data, y_train_np: np.ndarray, y_test_np: np.ndar
     print(f"embed_dim={embed_dim}  →  {dim_dir}")
     print(f"{'=' * 60}")
 
-    # Train Dense MRL
-    mrl_enc, mrl_head = train_single_model(
-        cfg, data, dim_dir, model_type="matryoshka", model_tag="dense_mrl"
-    )
+    # Optionally train Dense MRL
+    mrl_enc = mrl_head = None
+    if include_dense_mrl:
+        mrl_enc, mrl_head = train_single_model(
+            cfg, data, dim_dir, model_type="matryoshka", model_tag="dense_mrl"
+        )
     # Train MRL-E (same encoder arch, no-bias head, direct weight-slice loss)
     mrle_enc, mrle_head = train_mrl_e(cfg, data, dim_dir, model_tag="mrl_e")
     # Train PrefixL1 variants (alpha=1.0 standard + alpha sweep)
@@ -624,27 +649,26 @@ def run_one_dim(embed_dim: int, data, y_train_np: np.ndarray, y_test_np: np.ndar
                     train_prefix_l1_alpha(cfg, data, dim_dir, model_tag=tag, alpha=alpha)
         pl1_models[alpha] = (enc, head)
 
-    all_tags = ["dense_mrl", "mrl_e"] + [
+    all_tags = (["dense_mrl"] if include_dense_mrl else []) + ["mrl_e"] + [
         "prefix_l1" if a == 1.0 else f"prefix_l1_a{str(a).replace('.', '')}"
         for a in [1.0] + L1_ALPHAS
     ]
     plot_training_curves(dim_dir, all_tags, fig_stamp)
 
     # Extract embeddings; reverse all PrefixL1 variants
-    Z_train_mrl = get_embeddings_np(mrl_enc, data.X_train)
-    Z_test_mrl  = get_embeddings_np(mrl_enc, data.X_test)
-    W_mrl = mrl_head.head.weight.detach().cpu().numpy()
-    b_mrl = mrl_head.head.bias.detach().cpu().numpy()
+    models_data = {}
+    if include_dense_mrl:
+        Z_train_mrl = get_embeddings_np(mrl_enc, data.X_train)
+        Z_test_mrl  = get_embeddings_np(mrl_enc, data.X_test)
+        W_mrl = mrl_head.head.weight.detach().cpu().numpy()
+        b_mrl = mrl_head.head.bias.detach().cpu().numpy()
+        models_data["Dense MRL"] = (Z_train_mrl, Z_test_mrl, W_mrl, b_mrl)
 
     Z_train_mrle = get_embeddings_np(mrle_enc, data.X_train)
     Z_test_mrle  = get_embeddings_np(mrle_enc, data.X_test)
     W_mrle = mrle_head.head.weight.detach().cpu().numpy()
     b_mrle = np.zeros(W_mrle.shape[0])  # MRL-E has no bias
-
-    models_data = {
-        "Dense MRL": (Z_train_mrl,  Z_test_mrl,  W_mrl,  b_mrl),
-        "MRL-E":     (Z_train_mrle, Z_test_mrle, W_mrle, b_mrle),
-    }
+    models_data["MRL-E"] = (Z_train_mrle, Z_test_mrle, W_mrle, b_mrle)
 
     alpha_to_name = {1.0: "PrefixL1 (rev)", 0.75: "PrefixL1 α=0.75 (rev)", 0.5: "PrefixL1 α=0.5 (rev)"}
     for alpha, (enc, head) in pl1_models.items():
@@ -716,8 +740,9 @@ def run_one_dim(embed_dim: int, data, y_train_np: np.ndarray, y_test_np: np.ndar
 
 def main():
     """
-    Loops over EMBED_DIMS [8, 16, 32, 64] (or a single --embed-dim if given).
-    Data is loaded once; each dim gets its own subdirectory under the root run_dir.
+    Loops over EMBED_DIMS (or MNIST_EMBED_DIMS when --dataset mnist) — or a
+    single --embed-dim if given. Data is loaded once; each dim gets its own
+    subdirectory under the root run_dir.
     """
     run_start = time.time()
 
@@ -725,13 +750,34 @@ def main():
         description="Exp14 — Two-Evaluation Comparison: Dense MRL vs PrefixL1"
     )
     parser.add_argument("--fast", action="store_true",
-                        help="Smoke test: digits, embed_dim=8, 5 epochs.")
+                        help="Smoke test: embed_dim=8, 5 epochs (MNIST→digits; CD34→500 cells).")
     parser.add_argument("--embed-dim", type=int, default=None, metavar="N",
                         help="Run a single embed_dim instead of the full sweep.")
+    parser.add_argument("--dataset", type=str, default=None,
+                        choices=["mnist", "cd34"],
+                        help="Dataset override: 'mnist' or 'cd34'. "
+                             "Defaults to the DATASET constant in CONFIG.")
+    parser.add_argument("--no-dense-mrl", action="store_true",
+                        help="Skip Dense MRL training (keep only MRL-E + PrefixL1 variants).")
     args = parser.parse_args()
 
+    include_dense_mrl = not args.no_dense_mrl
+
+    # Resolve dataset: CLI flag overrides CONFIG constant
+    dataset = args.dataset if args.dataset is not None else DATASET
+
+    # Dataset-conditional config
+    if dataset == "cd34":
+        dataset_name       = "cd34"
+        epochs             = 5 if args.fast else EPOCHS
+        embed_dims_default = EMBED_DIMS
+    else:
+        dataset_name       = "digits" if args.fast else "mnist"
+        epochs             = 5 if args.fast else MNIST_EPOCHS
+        embed_dims_default = MNIST_EMBED_DIMS
+
     embed_dims = [args.embed_dim] if args.embed_dim is not None else (
-        [8] if args.fast else EMBED_DIMS
+        [8] if args.fast else embed_dims_default
     )
 
     if args.fast:
@@ -748,28 +794,45 @@ def main():
     run_dir   = create_run_dir(fast=args.fast)
     fig_stamp = time.strftime("_%Y_%m_%d__%H_%M_%S")
     print(f"[exp14] Root output → {run_dir}")
+    print(f"[exp14] Dataset     → {dataset}  (include_dense_mrl={include_dense_mrl})")
     print(f"[exp14] Embed dims  → {embed_dims}\n")
 
     # Load data once (shared across all dims)
-    base_cfg = ExpConfig(
-        dataset="digits" if args.fast else DATASET,
-        embed_dim=embed_dims[0], hidden_dim=HIDDEN_DIM,
-        head_mode=HEAD_MODE, eval_prefixes=list(range(1, embed_dims[0] + 1)),
-        lr=LR, epochs=EPOCHS, batch_size=BATCH_SIZE, patience=PATIENCE,
-        weight_decay=WEIGHT_DECAY, seed=SEED, l1_lambda=L1_LAMBDA,
-        experiment_name="exp14_two_eval_compare",
-    )
-    data = load_data(base_cfg)
+    if dataset == "cd34":
+        from experiments.exp13_mrl_cd34_supervised import (
+            load_cd34_data, make_data_split,
+        )
+        if not os.path.exists(CD34_DATA_PATH):
+            print(f"[exp14] ERROR: CD34 data file not found: {CD34_DATA_PATH}")
+            sys.exit(1)
+        X_hvg, y_int, _, _, _, _, _ = load_cd34_data(
+            CD34_DATA_PATH, CD34_N_HVG, CD34_RECOMPUTE_HVG, args.fast, SEED,
+        )
+        data = make_data_split(X_hvg, y_int, test_size=0.2, val_size=0.1, seed=SEED)
+    else:
+        base_cfg = ExpConfig(
+            dataset=dataset_name,
+            embed_dim=embed_dims[0], hidden_dim=HIDDEN_DIM,
+            head_mode=HEAD_MODE, eval_prefixes=list(range(1, embed_dims[0] + 1)),
+            lr=LR, epochs=EPOCHS, batch_size=BATCH_SIZE, patience=PATIENCE,
+            weight_decay=WEIGHT_DECAY, seed=SEED, l1_lambda=L1_LAMBDA,
+            experiment_name="exp14_two_eval_compare",
+        )
+        data = load_data(base_cfg)
+
     y_train_np = np.array(data.y_train.tolist(), dtype=np.int64)
     y_test_np  = np.array(data.y_test.tolist(),  dtype=np.int64)
-    print(f"[exp14] Data: train={data.X_train.shape}  test={data.X_test.shape}\n")
+    print(f"[exp14] Data: train={data.X_train.shape}  test={data.X_test.shape}"
+          f"  n_classes={data.n_classes}\n")
 
     for embed_dim in embed_dims:
         dim_dir = os.path.join(run_dir, f"embed_{embed_dim}")
         os.makedirs(dim_dir, exist_ok=True)
         run_one_dim(embed_dim, data, y_train_np, y_test_np,
                     dim_dir, fig_stamp, args.fast,
-                    max_lr_samples, max_1nn_e1, max_probe_samples)
+                    max_lr_samples, max_1nn_e1, max_probe_samples,
+                    dataset_name=dataset_name, epochs=epochs,
+                    include_dense_mrl=include_dense_mrl)
 
     save_runtime(run_dir, time.time() - run_start)
     save_code_snapshot(run_dir)

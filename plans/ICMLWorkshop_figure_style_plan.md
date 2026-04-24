@@ -132,6 +132,116 @@ All figures go to:
 
 ---
 
+## 3.5 Canonical reference — `plot_fig_combined.py`
+
+**Rule**: `weight_symmetry/scripts/plot_fig_combined.py` is the canonical reference for all multi-panel figures. Every new plotting script SHOULD mirror the conventions below unless there is a documented reason not to. Deviations = warning signs during review.
+
+### 3.5a Style import
+
+Never redefine rcParams inline — call the shared helper:
+
+```python
+from weight_symmetry.plotting.style import apply_style
+apply_style()  # serif, 9pt base, 8pt ticks/legend, dpi 300, pdf.fonttype 42
+```
+
+### 3.5b Figure + gridspec skeleton (multi-panel)
+
+Use `plt.figure(figsize=(...))` + `fig.add_gridspec(...)` (not `plt.subplots`). This is what panel (b) of the combined figure uses and it gives clean control over margins.
+
+```python
+fig = plt.figure(figsize=(6.35, 3.69))       # 2×3 CLF grid reference size
+gs  = fig.add_gridspec(2, 3,
+                        left=0.13, right=0.98,
+                        top=0.89, bottom=0.18,
+                        wspace=0.38, hspace=0.52)
+axes = [[fig.add_subplot(gs[r, c]) for c in range(3)] for r in range(2)]
+```
+
+Tune **only** `left/right/top/bottom` to make room for row labels, titles, or a legend strip. Keep `wspace=0.38`, `hspace≈0.52` for 2×3 grids (reduce slightly when rows are shallower, but keep consistent within a figure).
+
+### 3.5c Grid helper
+
+```python
+def _grid(ax):
+    ax.grid(True, linestyle="--", linewidth=0.4, alpha=0.5, color="gray")
+```
+
+Call `_grid(ax)` on **every** axis, always last (after plotting).
+
+### 3.5d Row labels (bold rotated, left margin)
+
+Used to label a row of sub-panels (e.g. "FP-MRL", r"MD-$\ell_1$"):
+
+```python
+ax.annotate(row_label,
+            xy=(-0.24, 0.5), xycoords="axes fraction",
+            fontsize=9, rotation=90, va="center", ha="center",
+            fontweight="bold")
+```
+
+- Offset `xy=(-0.24, 0.5)` is the reference; bump to `-0.35`/`-0.55` only if y-tick labels extend wider.
+- Rotation is always 90; font size 9; bold.
+
+### 3.5e Column headers / panel titles
+
+Plain `ax.set_title("$k = 2$")` etc. — **no** explicit `fontsize`; inherits 9pt from rcParams.
+
+### 3.5f Panel labels `(i), (ii), (iii), …` (column-major)
+
+```python
+ax.text(-0.08, 1.02, "(i)",
+        transform=ax.transAxes, fontsize=9, fontweight="bold",
+        va="bottom", ha="left", zorder=5)
+```
+
+Column-major ordering: `(i)` top-left, `(ii)` bottom-left, `(iii)` top-mid, `(iv)` bottom-mid, `(v)` top-right, `(vi)` bottom-right. Omit for standalone figures that don't need to be referenced as sub-panels; always include when composed into a multi-section figure.
+
+### 3.5g Shared legend strip (below the panel)
+
+```python
+fig.legend(handles=HANDLES,
+           loc="lower center", bbox_to_anchor=(0.54, 0.02),
+           ncol=N, frameon=True, handlelength=1.0,
+           borderpad=0.4, labelspacing=0.3, columnspacing=1.0,
+           fontsize=8, title="...", title_fontsize=8)
+```
+
+- Anchor x ≈ center of the panel (`0.24` for combined's (a), `0.755` for (b), `0.54` when panel is standalone).
+- Anchor y = `0.02` with gridspec `bottom=0.18` is a good default gap. Increase `bottom` (not y) if the legend is too close to the x-axis label.
+
+### 3.5h Method colors + labels (use these tokens verbatim)
+
+```python
+FP_MRL_COLOR    = "#009E73"   # FP-MRL
+PREFIX_L1_COLOR = "#CC79A7"   # MD-ℓ₁
+MRL_COLOR       = "#E07B00"   # S-MRL
+LAE_COLOR       = "#888888"   # Unordered LAE / Normal CE
+L2_COLOR        = "#56B4E9"   # NU-ℓ₂
+# Bar overlays
+PCA_BAR_COLOR   = "#C9AEED"
+LDA_BAR_COLOR   = "#F0A500"
+
+FP_MRL_LABEL    = "FP-MRL"
+PREFIX_L1_LABEL = r"MD-$\ell_1$"
+# Other canonical labels: "S-MRL", "Unordered", r"NU-$\ell_2$"
+```
+
+**Rules**:
+- Never introduce a new color for an existing method.
+- `MD-$\ell_1$` (LaTeX) — never `"MD-l1"`, `"PrefixL1"`, `"prefix_l1"` in a user-visible label.
+- "Unordered" replaces "MSE LAE" / "Normal CE" / "Fisher" as the baseline label whenever the figure shows the loss family in a column title or section label.
+
+### 3.5i Saving
+
+```python
+from weight_symmetry.plotting.style import save_fig
+fig_stamp = time.strftime("%Y_%m_%d__%H_%M_%S")
+save_fig(fig, "my_fig_name", fig_stamp)   # writes .pdf/.png/.svg to FIGURES_DIR
+```
+
+---
+
 ## 4. Figure Specs
 
 ### Fig 1 — Loss-Family Comparison: Cosine Similarity to PCA and LDA (NEW PLAN — 2026-04-20)

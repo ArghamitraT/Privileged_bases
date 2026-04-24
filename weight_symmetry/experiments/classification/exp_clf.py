@@ -3,7 +3,11 @@ Script: weight_symmetry/experiments/classification/exp_clf.py
 -------------------------------------------------------------
 Final classification experiment for the Weight Symmetry paper.
 
-Two model families trained on MNIST, evaluated at every prefix k = 1..embed_dim:
+Three model families trained on MNIST, evaluated at every prefix k = 1..embed_dim:
+
+  Standard CE  (baseline; unordered)
+      Plain CE on the full embedding — no prefix pressure, no L1 penalty.
+      Single W ∈ R^{C×d} with bias. Dimensions NOT reversed.
 
   Full Prefix MRL-E
       MRL-E (efficient Matryoshka) — single W ∈ R^{C×d}, no bias.
@@ -76,18 +80,24 @@ BATCH_SIZE        = 128
 WEIGHT_DECAY      = 1e-4
 SEED              = 42
 L1_LAMBDA         = 0.05
-L1_ALPHAS         = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1]   # one PrefixL1 model per alpha; edit freely
+L1_ALPHAS         = [1.0]   # one PrefixL1 model per alpha; edit freely
+INCLUDE_STANDARD_CE = True   # unordered plain-CE baseline, same architecture
 MAX_LR_SAMPLES    = 10_000   # Eval 1: subsample cap for fresh LR fits
 MAX_1NN_DB        = 10_000   # 1-NN database cap (shared across both evals)
 MAX_PROBE_SAMPLES = 2_000    # per-dim probe LR subsample
 # ==============================================================================
 
 # Color palette — extended automatically if more alphas are added
+_STD_CE_COLOR  = "dimgray"
 _MRL_E_COLOR   = "mediumseagreen"
 _L1_COLORS     = ["crimson", "orchid", "steelblue", "darkorange", "mediumpurple"]
+_STD_CE_NAME   = "Standard CE"
 
-def _build_color_map(l1_alphas):
-    cmap = {"Full Prefix MRL-E": _MRL_E_COLOR}
+def _build_color_map(l1_alphas, include_standard_ce=True):
+    cmap = {}
+    if include_standard_ce:
+        cmap[_STD_CE_NAME] = _STD_CE_COLOR
+    cmap["Full Prefix MRL-E"] = _MRL_E_COLOR
     for i, a in enumerate(l1_alphas):
         cmap[_l1_name(a)] = _L1_COLORS[i % len(_L1_COLORS)]
     return cmap
@@ -150,6 +160,17 @@ class MRLELoss(nn.Module):
             for k in range(1, self.embed_dim + 1)
         ]
         return torch.stack(losses).mean()
+
+
+class StandardCELoss(nn.Module):
+    """Plain CE(head(z), y) — no prefix pressure, no ordering penalty."""
+    def __init__(self):
+        super().__init__()
+        self.ce = nn.CrossEntropyLoss()
+
+    def forward(self, embedding: torch.Tensor, labels: torch.Tensor,
+                head: nn.Module) -> torch.Tensor:
+        return self.ce(head(embedding), labels)
 
 
 class PrefixL1Loss(nn.Module):
@@ -287,6 +308,18 @@ def train_mrl_e(data, embed_dim, hidden_dim, epochs, patience, batch_size,
                                lr=lr, weight_decay=weight_decay)
     train_clf(encoder, head, loss_fn, opt, data,
               epochs, patience, batch_size, seed, run_dir, "mrl_e")
+    return encoder, head
+
+
+def train_standard_ce(data, embed_dim, hidden_dim, epochs, patience, batch_size,
+                      lr, weight_decay, seed, run_dir) -> tuple:
+    encoder = MLPEncoder(data.input_dim, hidden_dim, embed_dim)
+    head    = nn.Linear(embed_dim, data.n_classes)
+    loss_fn = StandardCELoss()
+    opt     = torch.optim.Adam(list(encoder.parameters()) + list(head.parameters()),
+                               lr=lr, weight_decay=weight_decay)
+    train_clf(encoder, head, loss_fn, opt, data,
+              epochs, patience, batch_size, seed, run_dir, "standard_ce")
     return encoder, head
 
 
@@ -454,7 +487,7 @@ def plot_combined_comparison(eval1_linear, eval2_linear, nn_results,
 
     axes[0, 0].set_ylabel("Accuracy", fontsize=10)
     axes[1, 0].set_ylabel("Accuracy", fontsize=10)
-    fig.suptitle("Full Prefix MRL-E vs PrefixL1 — Prefix Sweep", fontsize=13)
+    fig.suptitle("Standard CE vs Full Prefix MRL-E vs PrefixL1 — Prefix Sweep", fontsize=13)
     plt.tight_layout()
     out = os.path.join(run_dir, f"combined_comparison{fig_stamp}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight"); plt.close()
@@ -616,6 +649,8 @@ def save_experiment_description(cfg: dict, run_dir: str):
         f.write("=" * 70 + "\n\n")
         f.write(
             "Models:\n"
+            "  Standard CE       : plain CE on full embedding — unordered baseline,\n"
+            "                      same architecture (MLPEncoder + Linear head w/ bias)\n"
             "  Full Prefix MRL-E : single W (no bias), trained at every prefix k=1..d\n"
             "                      via (1/d) Σ_k CE(z[:,:k] @ W[:,:k].T, y)\n"
             "  Full Prefix L1 α  : CE(Wz,y) + λ Σ_j (d-j)^α |z_j|, one per alpha\n"
@@ -664,6 +699,7 @@ def run_experiment(fast: bool = False):
         "epochs": epochs, "patience": patience, "lr": LR,
         "batch_size": BATCH_SIZE, "weight_decay": WEIGHT_DECAY, "seed": SEED,
         "l1_lambda": L1_LAMBDA, "l1_alphas": L1_ALPHAS,
+        "include_standard_ce": INCLUDE_STANDARD_CE,
         "max_lr_samples": max_lr_samples, "max_1nn_db": max_1nn_db,
         "max_probe_samples": max_probe_samples, "fast": fast,
     }
@@ -675,7 +711,7 @@ def run_experiment(fast: bool = False):
     run_dir   = create_run_dir(fast=fast)
     fig_stamp = time.strftime("_%Y_%m_%d__%H_%M_%S")
     eval_prefixes = list(range(1, embed_dim + 1))
-    color_map = _build_color_map(L1_ALPHAS)
+    color_map = _build_color_map(L1_ALPHAS, include_standard_ce=INCLUDE_STANDARD_CE)
 
     print(f"[clf] Output → {run_dir}")
     print(f"[clf] embed_dim={embed_dim}  L1_ALPHAS={L1_ALPHAS}\n")
@@ -690,6 +726,14 @@ def run_experiment(fast: bool = False):
     print(f"[clf] Data: train={data.X_train.shape}  test={data.X_test.shape}\n")
 
     # ---- Train all models ----
+    std_ce_enc, std_ce_head = None, None
+    if INCLUDE_STANDARD_CE:
+        print("[clf] Training Standard CE (unordered baseline) ...")
+        std_ce_enc, std_ce_head = train_standard_ce(
+            data, embed_dim, hidden_dim, epochs, patience, BATCH_SIZE,
+            LR, WEIGHT_DECAY, SEED, run_dir,
+        )
+
     print("[clf] Training Full Prefix MRL-E ...")
     mrle_enc, mrle_head = train_mrl_e(
         data, embed_dim, hidden_dim, epochs, patience, BATCH_SIZE,
@@ -708,16 +752,28 @@ def run_experiment(fast: bool = False):
         pl1_models[alpha] = (enc, head)
 
     # ---- Training curves ----
-    all_tags = ["mrl_e"] + [f"prefix_l1_a{str(a).replace('.', '')}" for a in L1_ALPHAS]
+    all_tags = []
+    if INCLUDE_STANDARD_CE:
+        all_tags.append("standard_ce")
+    all_tags += ["mrl_e"] + [f"prefix_l1_a{str(a).replace('.', '')}" for a in L1_ALPHAS]
     plot_training_curves(run_dir, all_tags, fig_stamp)
 
     # ---- Extract embeddings ----
+    models_data = {}
+
+    if INCLUDE_STANDARD_CE:
+        Z_tr_std = get_embeddings(std_ce_enc, data.X_train)
+        Z_te_std = get_embeddings(std_ce_enc, data.X_test)
+        W_std    = std_ce_head.weight.detach().cpu().numpy()
+        b_std    = std_ce_head.bias.detach().cpu().numpy()
+        models_data[_STD_CE_NAME] = (Z_tr_std, Z_te_std, W_std, b_std)
+
     Z_tr_mrle = get_embeddings(mrle_enc, data.X_train)
     Z_te_mrle = get_embeddings(mrle_enc, data.X_test)
     W_mrle    = mrle_head.head.weight.detach().cpu().numpy()
     b_mrle    = np.zeros(W_mrle.shape[0])
 
-    models_data = {"Full Prefix MRL-E": (Z_tr_mrle, Z_te_mrle, W_mrle, b_mrle)}
+    models_data["Full Prefix MRL-E"] = (Z_tr_mrle, Z_te_mrle, W_mrle, b_mrle)
 
     for alpha, (enc, head) in pl1_models.items():
         # Reverse dims (most informative first) and mirror W columns accordingly

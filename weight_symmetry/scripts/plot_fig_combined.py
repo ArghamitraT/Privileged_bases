@@ -57,11 +57,11 @@ EIG_DIR      = os.path.join(
 DEFAULT_CLF_RUN = os.path.join(RESULTS_ROOT, "exprmnt_2026_04_22__15_40_00")
 
 # Default PCALDA run folders
-DEFAULT_SYNTH_RUN         = "exprmnt_2026_04_19__16_00_49/exprmnt_2026_04_20__13_46_30"
+DEFAULT_SYNTH_RUN         = "exprmnt_2026_04_23__20_18_55"
 DEFAULT_NORMAL_FISHER_RUN = "exprmnt_2026_04_20__01_31_36"
 DEFAULT_FP_FISHER_RUN     = "exprmnt_2026_04_20__01_44_24"
 DEFAULT_EXTRA_FISHER_RUN  = "exprmnt_2026_04_20__11_33_48"
-DEFAULT_FMNIST_RUN        = "exprmnt_2026_04_20__22_41_23"
+DEFAULT_FMNIST_RUN        = "exprmnt_2026_04_23__15_29_53"
 DEFAULT_FMNIST_FISHER     = "exprmnt_2026_04_21__07_47_27"
 
 # ==============================================================================
@@ -74,46 +74,52 @@ MRL_COLOR       = "#E07B00"
 LAE_COLOR       = "#888888"
 L2_COLOR        = "#56B4E9"
 
-PCA_BAR_COLOR = "#C9AEED"
-LDA_BAR_COLOR = "#F0A500"
+PCA_BAR_COLOR  = "#C9AEED"
+PCA_TEXT_COLOR = "#7B5AB8"   # darker purple — used only for PCA axis label/ticks
+LDA_BAR_COLOR  = "#F0A500"
 
-FP_MRL_LABEL    = "FP MRL"
-PREFIX_L1_LABEL = "PrefixL1"
+FP_MRL_LABEL    = "FP-MRL"
+PREFIX_L1_LABEL = r"MD-$\ell_1$"
 
 # PCALDA model configs (tag, label, color, ls, lw, pending)
 SYNTH_PCA_MODELS = [
     ("mse_lae",          "Unordered",    LAE_COLOR,       "--", 1.0, False),
-    ("std_mrl_mse",      "Sparse MRL",   MRL_COLOR,       "-",  1.8, False),
-    ("fp_mrl_mse_ortho", "FP MRL",       FP_MRL_COLOR,    "-",  1.8, False),
-    ("prefix_l1_mse",    "PrefixL1",     PREFIX_L1_COLOR, "-",  1.8, False),
-    ("nonuniform_l2",    "NonUnif. L2",  L2_COLOR,        "-",  1.8, False),
+    ("std_mrl_mse",      "S-MRL",   MRL_COLOR,       "-",  1.8, False),
+    ("fp_mrl_mse_ortho", "FP-MRL",       FP_MRL_COLOR,    "-",  1.8, False),
+    ("prefix_l1_mse",    r"MD-$\ell_1$",     PREFIX_L1_COLOR, "-",  1.8, False),
+    ("nonuniform_l2",    r"NU-$\ell_2$",  L2_COLOR,        "-",  1.8, False),
 ]
 SYNTH_FISHER_MODELS = [
     ("fisher",           "Unordered",    LAE_COLOR,       "--", 1.0, False),
-    ("fp_fisher",        "FP MRL",       FP_MRL_COLOR,    "-",  1.8, False),
-    ("std_mrl_fisher",   "Sparse MRL",   MRL_COLOR,       "-",  1.8, False),
-    ("prefix_l1_fisher", "PrefixL1",     PREFIX_L1_COLOR, "-",  1.8, False),
+    ("fp_fisher",        "FP-MRL",       FP_MRL_COLOR,    "-",  1.8, False),
+    ("std_mrl_fisher",   "S-MRL",   MRL_COLOR,       "-",  1.8, False),
+    ("prefix_l1_fisher", r"MD-$\ell_1$",     PREFIX_L1_COLOR, "-",  1.8, False),
 ]
 FMNIST_PCA_MODELS = [
     ("mse_lae",          "Unordered",    LAE_COLOR,       "--", 1.0, False),
-    ("std_mrl_mse",      "Sparse MRL",   MRL_COLOR,       "-",  1.8, False),
-    ("fp_mrl_mse_ortho", "FP MRL",       FP_MRL_COLOR,    "-",  1.8, False),
-    ("prefix_l1_mse",    "PrefixL1",     PREFIX_L1_COLOR, "-",  1.8, False),
-    ("nonuniform_l2",    "NonUnif. L2",  L2_COLOR,        "-",  1.8, False),
+    ("std_mrl_mse",      "S-MRL",   MRL_COLOR,       "-",  1.8, False),
+    ("fp_mrl_mse_ortho", "FP-MRL",       FP_MRL_COLOR,    "-",  1.8, False),
+    ("prefix_l1_mse",    r"MD-$\ell_1$",     PREFIX_L1_COLOR, "-",  1.8, False),
+    ("nonuniform_l2",    r"NU-$\ell_2$",  L2_COLOR,        "-",  1.8, False),
 ]
 FMNIST_FISHER_MODELS = [
     ("fisher",           "Unordered",    LAE_COLOR,       "--", 1.0, False),
-    ("fp_fisher",        "FP MRL",       FP_MRL_COLOR,    "-",  1.8, False),
-    ("std_mrl_fisher",   "Sparse MRL",   MRL_COLOR,       "-",  1.8, False),
-    ("prefix_l1_fisher", "PrefixL1",     PREFIX_L1_COLOR, "-",  1.8, False),
+    ("fp_fisher",        "FP-MRL",       FP_MRL_COLOR,    "-",  1.8, False),
+    ("std_mrl_fisher",   "S-MRL",   MRL_COLOR,       "-",  1.8, False),
+    ("prefix_l1_fisher", r"MD-$\ell_1$",     PREFIX_L1_COLOR, "-",  1.8, False),
 ]
 
 SHARED_LEGEND_HANDLES = [
     Line2D([0], [0], color=LAE_COLOR,       ls="--", lw=1.0, label="Unordered"),
-    Line2D([0], [0], color=MRL_COLOR,       ls="-",  lw=1.8, label="Sparse MRL"),
-    Line2D([0], [0], color=FP_MRL_COLOR,    ls="-",  lw=1.8, label="FP MRL"),
-    Line2D([0], [0], color=PREFIX_L1_COLOR, ls="-",  lw=1.8, label="PrefixL1"),
-    Line2D([0], [0], color=L2_COLOR,        ls="-",  lw=1.8, label="NonUnif. L2"),
+    Line2D([0], [0], color=MRL_COLOR,       ls="-",  lw=1.8, label="S-MRL"),
+    Line2D([0], [0], color=FP_MRL_COLOR,    ls="-",  lw=1.8, label="FP-MRL"),
+    Line2D([0], [0], color=PREFIX_L1_COLOR, ls="-",  lw=1.8, label=r"MD-$\ell_1$"),
+    Line2D([0], [0], color=L2_COLOR,        ls="-",  lw=1.8, label=r"NU-$\ell_2$"),
+]
+
+SHARED_LEGEND_B = [
+    Line2D([0], [0], color=FP_MRL_COLOR,    ls="-", lw=1.8, label=FP_MRL_LABEL),
+    Line2D([0], [0], color=PREFIX_L1_COLOR, ls="-", lw=1.8, label=PREFIX_L1_LABEL),
 ]
 
 # ==============================================================================
@@ -172,9 +178,11 @@ def _pcalda_panel(ax, axr, models, data, metric_suffix, n_plot,
         bc  = bar_color or PCA_BAR_COLOR
         bg  = bg_vals[:n_plot]
         xs  = np.arange(1, n_plot + 1)
-        axr.bar(xs, bg, color=bc, alpha=0.30, zorder=0, width=0.8)
-        axr.set_ylabel(bar_ylabel or "Norm. eigenvalue", color=bc)
-        axr.tick_params(axis="y", labelcolor=bc, labelsize=7)
+        bar_alpha  = 0.55 if bc == PCA_BAR_COLOR else 0.30
+        text_color = PCA_TEXT_COLOR if bc == PCA_BAR_COLOR else bc
+        axr.bar(xs, bg, color=bc, alpha=bar_alpha, zorder=0, width=0.8)
+        axr.set_ylabel(bar_ylabel or "Norm. eigenvalue", color=text_color)
+        axr.tick_params(axis="y", labelcolor=text_color, labelsize=7)
         axr.set_ylim(0, min(1.01, max(bg) * 1.3))
 
     for tag, label, color, ls, lw, pending in models:
@@ -260,40 +268,40 @@ def _grid(ax):
     ax.grid(True, linestyle="--", linewidth=0.4, alpha=0.5, color="gray")
 
 def _dim_ticks(ax, embed_dim):
-    step = max(1, embed_dim // 8)
-    ticks = list(range(0, embed_dim, step))
-    if embed_dim - 1 not in ticks:
-        ticks.append(embed_dim - 1)
+    # Even-spaced ticks (step, 2*step, ..., embed_dim); snap last to
+    # embed_dim if close to avoid crowding.
+    step  = max(1, embed_dim // 8)
+    ticks = list(range(step, embed_dim + 1, step))
+    if ticks[-1] != embed_dim:
+        if embed_dim - ticks[-1] < step:
+            ticks[-1] = embed_dim
+        else:
+            ticks.append(embed_dim)
     ax.set_xticks(ticks)
 
-def _panel_bars(ax, vals_mrl, vals_l1, ylabel, title, embed_dim, show_legend=False):
-    x = np.arange(embed_dim)
+def _panel_bars(ax, vals_mrl, vals_l1, ylabel, title, embed_dim):
+    x = np.arange(1, embed_dim + 1)
     w = 0.38
     ax.bar(x - w/2, vals_mrl, width=w, color=FP_MRL_COLOR,    label=FP_MRL_LABEL,    alpha=0.85)
     ax.bar(x + w/2, vals_l1,  width=w, color=PREFIX_L1_COLOR, label=PREFIX_L1_LABEL, alpha=0.85)
     ax.set_title(title)
-    ax.set_xlabel("Dimension")
+    ax.set_xlabel("Prefix size $k$")
     ax.set_ylabel(ylabel)
+    ax.set_xlim(0, embed_dim + 0.5)
     _dim_ticks(ax, embed_dim)
     _grid(ax)
-    if show_legend:
-        ax.legend(loc="upper right")
 
 def _panel_linear_acc(ax, res_mrl, res_l1, eval_prefixes):
     ks = eval_prefixes
-    ax.plot(ks, [res_mrl[k] for k in ks], color=FP_MRL_COLOR,    ls="-",  lw=1.8, label=FP_MRL_LABEL)
-    ax.plot(ks, [res_l1[k]  for k in ks], color=PREFIX_L1_COLOR, ls="-.", lw=1.8, label=PREFIX_L1_LABEL)
-    ax.set_title("Linear acc. (trained $W$)")
+    ax.plot(ks, [res_mrl[k] for k in ks], color=FP_MRL_COLOR,    ls="-", lw=1.8, label=FP_MRL_LABEL)
+    ax.plot(ks, [res_l1[k]  for k in ks], color=PREFIX_L1_COLOR, ls="-", lw=1.8, label=PREFIX_L1_LABEL)
+    ax.set_title(r"Linear acc. on $z_{1:k}$")
     ax.set_xlabel("Prefix size $k$")
-    ax.set_ylabel("Accuracy")
+    ax.set_ylabel("Classification accuracy")
     ax.set_ylim(0, 1.05)
-    step  = max(1, len(ks) // 8)
-    shown = ks[::step]
-    if ks[-1] not in shown:
-        shown = shown + [ks[-1]]
-    ax.set_xticks(shown)
+    ax.set_xlim(0, ks[-1] + 0.5)
+    _dim_ticks(ax, ks[-1])
     _grid(ax)
-    ax.legend(loc="lower right")
 
 def _panel_agreement(ax, scores, model_color, title):
     x, y = scores["mean_abs"], scores["probe_acc"]
@@ -306,7 +314,7 @@ def _panel_agreement(ax, scores, model_color, title):
             transform=ax.transAxes, ha="left", va="top", fontsize=8,
             bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.85))
     ax.set_title(title)
-    ax.set_xlabel("Mean $|z|$")
+    ax.set_xlabel(r"Mean $|z_k|$")
     ax.set_ylabel("1D Probe Acc")
     _grid(ax)
 
@@ -400,12 +408,12 @@ def main():
     apply_style()
 
     fig = plt.figure(figsize=(13.5, 5.2))
-    # Left section (a): PCALDA 2×2
+    # Left section (a): PCALDA 2×2 — bottom raised to leave room for horizontal legend
     gs_a = fig.add_gridspec(2, 2, left=0.05, right=0.43,
-                             wspace=0.34, hspace=0.52, top=0.91, bottom=0.12)
-    # Right section (b): CLF 2×3
+                             wspace=0.34, hspace=0.52, top=0.91, bottom=0.20)
+    # Right section (b): CLF 2×3 — bottom matches panel (a) for consistent row heights
     gs_b = fig.add_gridspec(2, 3, left=0.52, right=0.99,
-                             wspace=0.38, hspace=0.52, top=0.91, bottom=0.12)
+                             wspace=0.38, hspace=0.52, top=0.91, bottom=0.20)
 
     axes_a = [[fig.add_subplot(gs_a[r, c]) for c in range(2)] for r in range(2)]
     axes_b = [[fig.add_subplot(gs_b[r, c]) for c in range(3)] for r in range(2)]
@@ -427,7 +435,11 @@ def main():
          fmnist_lda_eig, LDA_BAR_COLOR, "LDA eig."),
     ]
     col_titles  = ["Cosine sim. to PCA", "Cosine sim. to LDA"]
-    row_labels  = ["Synthetic", "Fashion-MNIST"]
+    row_labels  = ["Synthetic Data", "Fashion-MNIST"]
+
+    # Column-major panel labels: (1,1)=i top-left, (2,1)=ii bottom-left,
+    # (1,2)=iii top-right, (2,2)=iv bottom-right
+    panel_labels = [["(i)", "(iii)"], ["(ii)", "(iv)"]]
 
     for row, col, models, d, metric, n_plot, eig, bc, byl in pcalda_panels:
         ax  = axes_a[row][col]
@@ -443,26 +455,48 @@ def main():
                         xycoords="axes fraction",
                         fontsize=9, rotation=90, va="center", ha="center",
                         fontweight="bold")
+        ax.text(-0.08, 1.02, panel_labels[row][col],
+                transform=ax.transAxes, fontsize=9, fontweight="bold",
+                va="bottom", ha="left", zorder=5)
 
-    # Shared legend in PCALDA top-right panel
-    axes_a[0][1].legend(handles=SHARED_LEGEND_HANDLES, loc="lower right",
-                        frameon=True, handlelength=1.6,
-                        borderpad=0.5, labelspacing=0.3)
+    # Shared legend — single horizontal strip below panel (a)
+    fig.legend(handles=SHARED_LEGEND_HANDLES,
+               loc="lower center", bbox_to_anchor=(0.24, 0.06),
+               ncol=5, frameon=True, handlelength=1.4,
+               borderpad=0.4, labelspacing=0.3, columnspacing=1.0,
+               fontsize=8)
 
     # ── CLF panels ───────────────────────────────────────────────────────────
     # Row 0
     _panel_bars(axes_b[0][0], scores_mrl["mean_abs"], scores_l1["mean_abs"],
-                "Mean $|z|$", "Mean $|z|$", embed_dim, show_legend=True)
+                r"Mean $|z_k|$", "Per-dim magnitude", embed_dim)
     _panel_bars(axes_b[0][1], scores_mrl["probe_acc"], scores_l1["probe_acc"],
-                "Probe acc.", "Probe accuracy", embed_dim)
+                "Classification accuracy", "1D Probe Acc", embed_dim)
     _panel_agreement(axes_b[0][2], scores_mrl,
-                     FP_MRL_COLOR, f"Method agreement — {FP_MRL_LABEL}")
+                     FP_MRL_COLOR, "Method agreement")
     # Row 1
     _panel_bars(axes_b[1][0], scores_mrl["variance"], scores_l1["variance"],
-                "Variance", "Variance", embed_dim)
+                "Variance", "Per-dim variance", embed_dim)
     _panel_linear_acc(axes_b[1][1], eval2_mrl, eval2_l1, eval_prefixes)
     _panel_agreement(axes_b[1][2], scores_l1,
-                     PREFIX_L1_COLOR, f"Method agreement — {PREFIX_L1_LABEL}")
+                     PREFIX_L1_COLOR, "Method agreement")
+
+    # Shared legend for panel (b) — horizontal strip below, mirroring panel (a)
+    fig.legend(handles=SHARED_LEGEND_B,
+               loc="lower center", bbox_to_anchor=(0.755, 0.06),
+               ncol=2, frameon=True, handlelength=1.4,
+               borderpad=0.4, labelspacing=0.3, columnspacing=1.0,
+               fontsize=8)
+
+    # Column-major panel labels for (b): (1,1)=i, (2,1)=ii, (1,2)=iii,
+    # (2,2)=iv, (1,3)=v, (2,3)=vi
+    panel_labels_b = [["(i)", "(iii)", "(v)"], ["(ii)", "(iv)", "(vi)"]]
+    for r in range(2):
+        for c in range(3):
+            axes_b[r][c].text(-0.08, 1.02, panel_labels_b[r][c],
+                              transform=axes_b[r][c].transAxes,
+                              fontsize=9, fontweight="bold",
+                              va="bottom", ha="left", zorder=5)
 
     # ── Save ─────────────────────────────────────────────────────────────────
     fig_stamp = time.strftime("%Y_%m_%d__%H_%M_%S")

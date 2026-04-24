@@ -74,10 +74,7 @@ from weight_symmetry.evaluation.metrics import (
 # CONFIG — edit here to change the full run; use --fast for a quick smoke test
 # ==============================================================================
 EXPERIMENT_NOTE = (
-    "Exp 2: fixed PrefixL1 CE metric — previous runs used untrained heads[k-1] "
-    "instead of the trained full-dim head W_d with flipped columns. "
-    "Now uses W_d[:, ::-1][:, :k] so both W and B are consistently flipped "
-    "before computing (W_k @ B_{1:k})^T. Re-running all datasets with --use-weights."
+    "previous l2 was wrong, now fixed. Synthetic data: Also added more lambdas for nonuniform l2."
 )
 
 # Dataset — edit DATASET to switch; argparse --dataset overrides at runtime
@@ -87,19 +84,24 @@ EXPERIMENT_NOTE = (
 #   "mnist_noise"        → MNIST PCA-projected + N_NOISE_DIMS noise dims prepended
 #   "fashion_mnist_noise"→ same on Fashion-MNIST
 #   "20newsgroups"       → TF-IDF TruncatedSVD, P_SVD output dim
-DATASET           = "fashion_mnist"
+DATASET           = "synthetic"
 SYNTHETIC_VARIANT = "orderedBoth"   # only used when DATASET == "synthetic"
 SEEDS             = [47]
 # LOSS_FAMILIES     = ["mse", "ce", "fisher"]   # run all by default
-LOSS_FAMILIES     = ["fisher"]   # run all by default
+LOSS_FAMILIES     = ["mse"]   # run all by default
 
 
 # Shared training hyperparameters
 LR                = 1e-3
 WEIGHT_DECAY      = 1e-4
 L1_LAMBDA         = 0.01
-NONUNIFORM_L2_LAM = 1.0
 FISHER_EPS        = 1e-4
+
+# NonUniform L2 (Bao et al. 2020): λ_i linspace(λ_min, λ_max, d) with λ_d < σ²_d.
+#   λ_max = NONUNIFORM_L2_SAFETY · σ²_d   (Theorem 3 needs strictly <; 0.5 keeps shrinkage factor ≈ 0.5)
+#   λ_min = λ_max / NONUNIFORM_L2_RATIO   (spread — larger ratio → stronger ordering, slower convergence)
+NONUNIFORM_L2_SAFETY = 0.5
+NONUNIFORM_L2_RATIO  = 9 
 
 # Per-family epochs / patience / batch_size — edit these directly
 EPOCHS_MSE_CE     = 1000
@@ -217,7 +219,7 @@ def _style(label):
 # Build loss + model
 # ==============================================================================
 
-def build_loss_fn(loss_type, standard_mrl_m, l1_lambda, nonuniform_l2_lam, fisher_eps):
+def build_loss_fn(loss_type, standard_mrl_m, l1_lambda, nonuniform_l2_lambdas, fisher_eps):
     if loss_type == "mse":
         return MSELoss()
     elif loss_type == "fullprefix":
@@ -225,7 +227,7 @@ def build_loss_fn(loss_type, standard_mrl_m, l1_lambda, nonuniform_l2_lam, fishe
     elif loss_type == "standard_mse":
         return StandardMRLLoss(prefix_sizes=standard_mrl_m)
     elif loss_type == "nonuniform_l2":
-        return NonUniformL2Loss(lam=nonuniform_l2_lam)
+        return NonUniformL2Loss(lambdas=nonuniform_l2_lambdas)
     elif loss_type == "prefix_l1_mse":
         return PrefixL1MSELoss(l1_lambda=l1_lambda)
     elif loss_type == "ce":
@@ -283,7 +285,9 @@ def train_family(family_mcs, data, global_cfg, fam_cfg, run_dir, seed, device):
         torch.manual_seed(seed)
         loss_fn = build_loss_fn(
             mc["loss"], standard_mrl_m,
-            global_cfg["l1_lambda"], global_cfg["nonuniform_l2_lam"], global_cfg["fisher_eps"],
+            global_cfg["l1_lambda"],
+            global_cfg.get("nonuniform_l2_lambdas"),
+            global_cfg["fisher_eps"],
         )
         if use_adam:
             opt = torch.optim.Adam(
@@ -865,18 +869,20 @@ def main():
         seeds = SEEDS
 
     global_cfg = dict(
-        experiment_name   = "exp2_objectivespecificity",
-        dataset           = dataset,
-        synthetic_variant = SYNTHETIC_VARIANT,
-        seeds             = seeds,
-        active_families   = active_families,
-        lr                = LR,
-        weight_decay      = WEIGHT_DECAY,
-        l1_lambda         = L1_LAMBDA,
-        nonuniform_l2_lam = NONUNIFORM_L2_LAM,
-        fisher_eps        = FISHER_EPS,
-        fast              = args.fast,
-        experiment_note   = EXPERIMENT_NOTE,
+        experiment_name       = "exp2_objectivespecificity",
+        dataset               = dataset,
+        synthetic_variant     = SYNTHETIC_VARIANT,
+        seeds                 = seeds,
+        active_families       = active_families,
+        lr                    = LR,
+        weight_decay          = WEIGHT_DECAY,
+        l1_lambda             = L1_LAMBDA,
+        nonuniform_l2_safety  = NONUNIFORM_L2_SAFETY,
+        nonuniform_l2_ratio   = NONUNIFORM_L2_RATIO,
+        nonuniform_l2_lambdas = None,   # populated after eigenvalues are computed
+        fisher_eps            = FISHER_EPS,
+        fast                  = args.fast,
+        experiment_note       = EXPERIMENT_NOTE,
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -997,6 +1003,27 @@ def main():
         print(f"[exp2] LDA eigenvalues (norm):  "
               f"{[f'{v:.4f}' for v in dataset_info['lda_eigenvalues_norm']]}  "
               f"sum={dataset_info['lda_eigenvalues_norm_sum']:.6f}")
+
+    if "mse" in active_families and "pca_eigenvalues" in dataset_info:
+        mse_d = fam_cfg["mse"]["embed_dim"]
+        lambdas, sigma2_d, lam_min, lam_max = _build_nonuniform_lambdas(
+            dataset_info["pca_eigenvalues"], mse_d,
+            NONUNIFORM_L2_SAFETY, NONUNIFORM_L2_RATIO,
+            data.input_dim,
+        )
+        global_cfg["nonuniform_l2_lambdas"] = lambdas
+        dataset_info["nonuniform_l2_sigma2_d"] = sigma2_d
+        dataset_info["nonuniform_l2_lam_min"]  = lam_min
+        dataset_info["nonuniform_l2_lam_max"]  = lam_max
+        dataset_info["nonuniform_l2_lambdas"]  = lambdas.tolist()
+        np.save(os.path.join(run_dir, "nonuniform_l2_lambdas.npy"), lambdas)
+        print(f"[exp2] NonUniform L2 schedule: d={mse_d}, σ²_d={sigma2_d:.4f}, "
+              f"λ ∈ [{lam_min:.4f}, {lam_max:.4f}], "
+              f"safety={NONUNIFORM_L2_SAFETY}, ratio={NONUNIFORM_L2_RATIO}")
+        # Re-save config with serialisable lambdas list
+        cfg_for_json = {**global_cfg, "nonuniform_l2_lambdas": lambdas.tolist()}
+        save_config(cfg_for_json, run_dir)
+
     save_experiment_description(global_cfg, run_dir, active_families, fam_cfg, dataset_info)
 
     all_histories      = {mc["tag"]: [] for mc in active_mcs}
@@ -1043,6 +1070,31 @@ def main():
     save_runtime(run_dir, elapsed)
     save_code_snapshot(run_dir)
     print(f"\n[exp2] Done. Results in: {run_dir}")
+
+
+def _build_nonuniform_lambdas(pca_eigenvalues, embed_dim, safety, ratio, input_dim):
+    """Bao et al. (NeurIPS 2020) non-uniform L2 λ schedule.
+
+    λ_max = safety · σ²_d   (Theorem 3 needs strictly <; safety < 1)
+    λ_min = λ_max / ratio   (spread)
+    lambdas = linspace(λ_min, λ_max, embed_dim), strictly increasing.
+
+    Scaling note: our recon uses F.mse_loss (mean over batch × features), which
+    is 1/p smaller than the paper's (1/n)·‖·‖²_F (sum over features, mean over
+    batch). So the effective λ that enters the gradient is p× the stored one.
+    We divide by input_dim here so Theorem 3's assumption λ_d < σ²_d holds for
+    the *effective* λ.
+    """
+    sigma2 = np.asarray(pca_eigenvalues, dtype=np.float64)
+    if len(sigma2) < embed_dim:
+        raise ValueError(f"Need ≥ {embed_dim} PCA eigenvalues, got {len(sigma2)}")
+    sigma2_d     = float(sigma2[embed_dim - 1])
+    lam_max_eff  = safety * sigma2_d              # effective λ_d (paper units)
+    lam_min_eff  = lam_max_eff / ratio
+    lam_max      = lam_max_eff / input_dim        # stored (compensates mse_loss 1/p)
+    lam_min      = lam_min_eff / input_dim
+    lambdas      = np.linspace(lam_min, lam_max, embed_dim).astype(np.float32)
+    return lambdas, sigma2_d, lam_min, lam_max
 
 
 def _compute_baselines(active_families, fam_cfg, pca_dirs, lda_dirs, data):

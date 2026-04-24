@@ -844,3 +844,97 @@ N_CLUSTERS         = 100    # k-means clusters (match SEACells n_metacells)
 FIXED_LP_P         = 1      # exponent for fixed_lp (1 = PrefixL1)
 MODELS_TO_RUN      = ["pca", "ce", "mrl", "fixed_lp", "learned_lp", "learned_lp_vec"]
 ```
+
+---
+
+## Exp 14 — Two-Evaluation Comparison: Dense MRL vs PrefixL1
+
+**Script:** `experiments/exp14_two_eval_compare.py`
+**Conda env:** `mrl_env`
+
+### Idea
+Train the same encoder+head pair two different ways (Dense MRL, MRL-E, and three
+PrefixL1 α variants), then evaluate each at every prefix `k = 1..d` **two ways**:
+
+| Eval | Linear accuracy | 1-NN accuracy |
+|---|---|---|
+| **Eval 1** (exp9/10 standard) | Fresh logistic regression refit on ≤`MAX_LR_SAMPLES` subsample of `z_train[:, :k]` | Subsampled (≤`MAX_1NN_DB_E1`) database |
+| **Eval 2** (no refit) | Trained `W` used directly: `logits_k = z_test[:, :k] @ W[:, :k].T + b` | Full `z_train` as database |
+
+The gap between Eval 1 and Eval 2 for each model quantifies how much of the
+prefix-ordering property is encoded in `W` itself versus being recovered by the
+fresh LR. Dense MRL is expected to show a small gap; PrefixL1 a larger one at
+small `k` because `W[:, :k]` was never trained for prefix `k`.
+
+### Datasets supported
+Primary dataset is controlled by the `DATASET` constant in the CONFIG block
+(default `"cd34"`). CLI `--dataset {mnist,cd34}` overrides it.
+
+| `DATASET` | Dataset | Default embed dims | Epochs | Source |
+|---|---|---|---|---|
+| `"cd34"` (default) | CD34 multiome HSPCs (6,881 cells × 2k HVGs, 8 cell types) | `EMBED_DIMS = [8, 16]` | `EPOCHS = 15` | exp13's `load_cd34_data` + `make_data_split` |
+| `"mnist"` | MNIST (digits with `--fast`) | `MNIST_EMBED_DIMS = [16]` | `MNIST_EPOCHS = 20` | `data/loader.py` |
+
+**CD34 caveat:** the train split (~4.8k cells) is smaller than `MAX_1NN_DB_E1`
+and `MAX_LR_SAMPLES`, so the subsampling caps don't trigger — Eval 1 and Eval 2
+1-NN databases collapse to the same set. The **linear-accuracy gap** is the
+meaningful signal on CD34.
+
+### Models trained
+| Tag / Legend | Loss | Notes |
+|---|---|---|
+| `dense_mrl` / "Dense MRL" | `MatryoshkaLoss` (all prefixes) | Skipped with `--no-dense-mrl` |
+| `mrl_e` / "MRL-E" | Custom: `(1/d) Σₖ CE(z[:,:k] @ W[:,:k].T, y)` | No bias, direct weight slicing |
+| `prefix_l1` / "PrefixL1 (rev)" | `PrefixLpLoss(p=1)`, dim_weights `(d-j)^1.0` | Dims reversed before eval |
+| `prefix_l1_a075` / "PrefixL1 α=0.75 (rev)" | Same, dim_weights `(d-j)^0.75` | |
+| `prefix_l1_a05` / "PrefixL1 α=0.5 (rev)" | Same, dim_weights `(d-j)^0.5` | |
+
+### How to run
+```bash
+conda activate mrl_env
+python experiments/exp14_two_eval_compare.py --fast                        # smoke test (digits, embed_dim=8)
+python experiments/exp14_two_eval_compare.py                               # full MNIST run
+python experiments/exp14_two_eval_compare.py --embed-dim 32                # MNIST, single dim
+python experiments/exp14_two_eval_compare.py --dataset cd34 --fast         # CD34 smoke test (500 cells)
+python experiments/exp14_two_eval_compare.py --dataset cd34                # CD34 full run, sweep [8, 16]
+python experiments/exp14_two_eval_compare.py --dataset cd34 --embed-dim 8  # CD34, single dim
+python experiments/exp14_two_eval_compare.py --dataset cd34 --no-dense-mrl # CD34 without Dense MRL
+python tests/run_tests_exp14.py --fast                                     # unit tests only
+```
+
+### Expected outputs
+```
+exprmnt_{timestamp}/
+└── embed_{d}/                                   # one subdir per embed_dim in the sweep
+    ├── training_curves_{stamp}.png              # loss vs epoch for all trained models
+    ├── combined_comparison_eval1_{stamp}.png    # linear + 1-NN vs k (fresh LR)
+    ├── combined_comparison_eval2_{stamp}.png    # linear + 1-NN vs k (trained W)
+    ├── importance_scores_{stamp}.png            # mean|z| / variance / probe_acc per dim
+    ├── method_agreement_{stamp}.png             # Spearman ρ between importance methods
+    ├── results_summary.txt                      # tables for both evals + gap
+    ├── {tag}_encoder_best.pt, {tag}_head_best.pt
+    └── {tag}_train.log
+exprmnt_{timestamp}/
+├── runtime.txt
+└── code_snapshot/
+```
+
+### Key CONFIG parameters
+```python
+# Primary CONFIG — current defaults match CD34 full run
+DATASET        = "cd34"                  # "cd34" or "mnist"  (CLI --dataset overrides)
+EMBED_DIMS     = [8, 16]                 # sweep; --embed-dim overrides
+HIDDEN_DIM     = 256
+EPOCHS         = 15                      # 15 for CD34; MNIST uses MNIST_EPOCHS
+L1_ALPHAS      = [0.75, 0.5]             # additional PrefixL1 dim-weight exponents
+MAX_LR_SAMPLES = 10_000                  # Eval 1 LR subsample cap
+MAX_1NN_DB_E1  = 10_000                  # Eval 1 1-NN database cap
+
+# CD34 data loading (used when DATASET == "cd34")
+CD34_DATA_PATH = "$HOME/Mat_embedding_hyperbole/data/cd34_multiome/GSE200046_cd34_multiome_rna.h5ad"
+CD34_N_HVG     = 2000                    # HVGs as input features → input_dim=2000
+
+# MNIST overrides (used when DATASET == "mnist")
+MNIST_EMBED_DIMS = [16]
+MNIST_EPOCHS     = 20
+```

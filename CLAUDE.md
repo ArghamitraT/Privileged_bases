@@ -53,6 +53,7 @@ Use a descriptive filename with the date, e.g. `2026_04_20_weekly_sync.md`.
 | 11 | `exp11_learned_prefix_lp.py` | MRL vs PrefixLp (fixed p) vs LearnedPrefixLp (p learned) |
 | 12 | `exp12_vector_learned_p.py` | MRL vs ScalarLearnedPrefixLp vs VectorLearnedPrefixLp (p per dim) |
 | 13 | `exp13_mrl_cd34_supervised.py` | Supervised MRL on CD34 HSPCs — prefix clustering vs SEACells baseline |
+| 14 | `exp14_two_eval_compare.py` | Two-evaluation comparison (fresh LR vs trained W) — MNIST or CD34 via `--dataset` |
 
 ### Quick-start (common run commands)
 ```bash
@@ -67,6 +68,8 @@ python experiments/exp10_dense_multidim.py --fast
 python experiments/exp11_learned_prefix_lp.py --fast
 python experiments/exp12_vector_learned_p.py --fast
 python experiments/exp13_mrl_cd34_supervised.py --fast
+python experiments/exp14_two_eval_compare.py --fast
+python experiments/exp14_two_eval_compare.py --dataset cd34 --fast
 
 # Per-experiment unit tests
 python tests/run_tests_exp7.py --fast
@@ -76,6 +79,7 @@ python tests/run_tests_exp10.py --fast
 python tests/run_tests_exp11.py --fast
 python tests/run_tests_exp12.py --fast
 python tests/run_tests_exp13.py --fast
+python tests/run_tests_exp14.py --fast
 
 # Multi-dim wrapper (exp10 → exp8 for each of dims 8, 16, 32)
 python scripts/run_exp10_8_multidim.py --fast --dims 8

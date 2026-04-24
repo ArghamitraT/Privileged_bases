@@ -74,28 +74,32 @@ class FullPrefixMRLLoss:
 
 class NonUniformL2Loss:
     """
-    Kunin et al. (2019) sum L2-regularised LAE loss.
+    Bao et al. (NeurIPS 2020) non-uniform L2-regularised LAE loss.
 
-        L = ||x - ABx||² + λ(||B||²_F + ||A||²_F)
+        L = ||x - ABx||²_F + Σ_i λ_i (||B[i,:]||² + ||A[:,i]||²)
 
-    At any critical point the encoder and decoder satisfy B ≈ Aᵀ (transpose
-    symmetry), and local minima recover the top-d PCA directions.
-    Reference: "Loss Landscapes of Regularized Linear Autoencoders", ICML 2019.
+    With 0 < λ_1 < λ_2 < ... < λ_d and λ_d < σ²_d (the d-th PCA eigenvalue),
+    Theorem 3 guarantees that the global minimum has ordered axis-aligned
+    principal directions: row i of B = ±u_i (i-th PCA eigenvector).
+    Reference: "Regularized linear autoencoders recover the principal
+    components, eventually", NeurIPS 2020.
 
     Args:
-        lam (float): L2 regularisation strength λ.  Typical range 0.1–50;
-                     larger λ shrinks singular values more aggressively.
+        lambdas: 1-D tensor/array of length d, strictly increasing.
+                 Calibrate λ_d < σ²_d from the data's PCA spectrum.
     """
-    def __init__(self, lam: float = 1.0):
-        self.lam = lam
+    def __init__(self, lambdas):
+        self.lambdas = torch.as_tensor(lambdas, dtype=torch.float32)
 
     def __call__(self, x: torch.Tensor, model) -> torch.Tensor:
         x_hat = model(x)
         recon = F.mse_loss(x_hat, x)
-        A = model.decoder.weight   # (p, d)
-        B = model.encoder.weight   # (d, p)
-        reg = self.lam * (B.pow(2).sum() + A.pow(2).sum())
-        return recon + reg
+        A   = model.decoder.weight                 # (p, d)
+        B   = model.encoder.weight                 # (d, p)
+        lam = self.lambdas.to(B.device)            # (d,)
+        reg_B = (lam * B.pow(2).sum(dim=1)).sum()  # Σ_i λ_i ||B[i,:]||²
+        reg_A = (lam * A.pow(2).sum(dim=0)).sum()  # Σ_i λ_i ||A[:,i]||²
+        return recon + reg_B + reg_A
 
 
 class OftadehLoss:
@@ -439,7 +443,7 @@ if __name__ == "__main__":
 
     for name, loss_fn in [
         ("MSELoss",           MSELoss()),
-        ("NonUniformL2Loss",  NonUniformL2Loss(lam=1.0)),
+        ("NonUniformL2Loss",  NonUniformL2Loss(lambdas=torch.linspace(0.1, 0.9, d))),
         ("PrefixL1MSELoss",   PrefixL1MSELoss(l1_lambda=0.01)),
         ("StandardMRLLoss",   StandardMRLLoss([2, 4, 6, 8])),
         ("FullPrefixMRLLoss", FullPrefixMRLLoss()),
