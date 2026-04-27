@@ -55,6 +55,8 @@ EIG_DIR      = os.path.join(
 
 # Default CLF run dir
 DEFAULT_CLF_RUN = os.path.join(RESULTS_ROOT, "exprmnt_2026_04_22__15_40_00")
+# Default Standard-CE (unordered) run dir — used for panel (b-iv) overlay
+DEFAULT_STD_CE_RUN = os.path.join(RESULTS_ROOT, "exprmnt_2026_04_24__14_54_10")
 
 # Default PCALDA run folders
 DEFAULT_SYNTH_RUN         = "exprmnt_2026_04_23__20_18_55"
@@ -118,8 +120,9 @@ SHARED_LEGEND_HANDLES = [
 ]
 
 SHARED_LEGEND_B = [
-    Line2D([0], [0], color=FP_MRL_COLOR,    ls="-", lw=1.8, label=FP_MRL_LABEL),
-    Line2D([0], [0], color=PREFIX_L1_COLOR, ls="-", lw=1.8, label=PREFIX_L1_LABEL),
+    Line2D([0], [0], color=LAE_COLOR,       ls="--", lw=1.0, label="Unordered"),
+    Line2D([0], [0], color=FP_MRL_COLOR,    ls="-",  lw=1.8, label=FP_MRL_LABEL),
+    Line2D([0], [0], color=PREFIX_L1_COLOR, ls="-",  lw=1.8, label=PREFIX_L1_LABEL),
 ]
 
 # ==============================================================================
@@ -291,10 +294,17 @@ def _panel_bars(ax, vals_mrl, vals_l1, ylabel, title, embed_dim):
     _dim_ticks(ax, embed_dim)
     _grid(ax)
 
-def _panel_linear_acc(ax, res_mrl, res_l1, eval_prefixes):
+def _panel_linear_acc(ax, res_mrl, res_l1, eval_prefixes, res_std_ce=None):
     ks = eval_prefixes
-    ax.plot(ks, [res_mrl[k] for k in ks], color=FP_MRL_COLOR,    ls="-", lw=1.8, label=FP_MRL_LABEL)
-    ax.plot(ks, [res_l1[k]  for k in ks], color=PREFIX_L1_COLOR, ls="-", lw=1.8, label=PREFIX_L1_LABEL)
+    ax.plot(ks, [res_mrl[k] for k in ks], color=FP_MRL_COLOR,    ls="-", lw=1.8,
+            label=FP_MRL_LABEL,    zorder=3)
+    ax.plot(ks, [res_l1[k]  for k in ks], color=PREFIX_L1_COLOR, ls="-", lw=1.8,
+            label=PREFIX_L1_LABEL, zorder=3)
+    if res_std_ce is not None:
+        # Same style as panel (a)'s "Unordered" line — high zorder so it
+        # isn't hidden behind the coloured curves.
+        ax.plot(ks, [res_std_ce[k] for k in ks], color=LAE_COLOR,
+                ls="--", lw=1.0, label="Unordered", zorder=6)
     ax.set_title(r"Linear acc. on $z_{1:k}$")
     ax.set_xlabel("Prefix size $k$")
     ax.set_ylabel("Classification accuracy")
@@ -325,6 +335,9 @@ def _panel_agreement(ax, scores, model_color, title):
 def main():
     parser = argparse.ArgumentParser(description="Combined PCALDA + CLF figure")
     parser.add_argument("--clf-run-dir",        default=DEFAULT_CLF_RUN)
+    parser.add_argument("--std-ce-run-dir",     default=DEFAULT_STD_CE_RUN,
+                        help="Folder containing standard_ce_{encoder,head}_best.pt "
+                             "for the unordered overlay in panel (b-iv).")
     parser.add_argument("--clf-alpha",          type=float, default=1.0)
     parser.add_argument("--fast",               action="store_true",
                         help="Limit probe to 200 samples for a quick check")
@@ -387,6 +400,27 @@ def main():
     W_l1    = np.ascontiguousarray(head_l1.weight.detach().cpu().numpy()[:, ::-1])
     b_l1    = head_l1.bias.detach().cpu().numpy()
 
+    # Standard CE (unordered) — loaded from a separate run folder; no dim reversal.
+    std_ce_dir = os.path.abspath(args.std_ce_run_dir)
+    with open(os.path.join(std_ce_dir, "config.json")) as fh:
+        std_cfg = json.load(fh)
+    if std_cfg["embed_dim"] != embed_dim or std_cfg["hidden_dim"] != hidden_dim:
+        raise ValueError(
+            f"std-ce-run-dir config (embed_dim={std_cfg['embed_dim']}, "
+            f"hidden_dim={std_cfg['hidden_dim']}) does not match clf-run-dir "
+            f"(embed_dim={embed_dim}, hidden_dim={hidden_dim})."
+        )
+    enc_std  = _load_encoder(std_ce_dir, "standard_ce", data.input_dim, hidden_dim, embed_dim)
+    head_std = _load_head_l1(std_ce_dir, "standard_ce", embed_dim, n_classes)
+    Z_te_std = _get_embeddings(enc_std, data.X_test)
+    W_std    = head_std.weight.detach().cpu().numpy()
+    b_std    = head_std.bias.detach().cpu().numpy()
+    # Sort dims by mean |z| ascending (low-magnitude first) so the prefix sweep
+    # shows the "unordered" behaviour under a deterministic, reproducible ordering.
+    _std_order = np.argsort(np.mean(np.abs(Z_te_std), axis=0))
+    Z_te_std   = np.ascontiguousarray(Z_te_std[:, _std_order])
+    W_std      = np.ascontiguousarray(W_std[:, _std_order])
+
     eval_prefixes = list(range(1, embed_dim + 1))
 
     print("[combined] Computing CLF metrics …")
@@ -400,8 +434,9 @@ def main():
         "variance":  np.var(Z_te_l1, axis=0),
         "probe_acc": _probe_acc(Z_tr_l1, Z_te_l1, y_train, y_test, max_probe, seed),
     }
-    eval2_mrl = _eval2_sweep(Z_te_mrl, y_test, W_mrl, b_mrl, eval_prefixes)
-    eval2_l1  = _eval2_sweep(Z_te_l1,  y_test, W_l1,  b_l1,  eval_prefixes)
+    eval2_mrl    = _eval2_sweep(Z_te_mrl, y_test, W_mrl, b_mrl, eval_prefixes)
+    eval2_l1     = _eval2_sweep(Z_te_l1,  y_test, W_l1,  b_l1,  eval_prefixes)
+    eval2_std_ce = _eval2_sweep(Z_te_std, y_test, W_std, b_std, eval_prefixes)
 
     # ── Build figure ─────────────────────────────────────────────────────────
     print("[combined] Rendering figure …")
@@ -417,11 +452,6 @@ def main():
 
     axes_a = [[fig.add_subplot(gs_a[r, c]) for c in range(2)] for r in range(2)]
     axes_b = [[fig.add_subplot(gs_b[r, c]) for c in range(3)] for r in range(2)]
-
-    # (a) section label
-    fig.text(0.05, 0.97, "(a)", fontsize=9, fontweight="bold", va="top")
-    # (b) section label
-    fig.text(0.52, 0.97, "(b)", fontsize=9, fontweight="bold", va="top")
 
     # ── PCALDA panels ────────────────────────────────────────────────────────
     pcalda_panels = [
@@ -469,22 +499,23 @@ def main():
     # ── CLF panels ───────────────────────────────────────────────────────────
     # Row 0
     _panel_bars(axes_b[0][0], scores_mrl["mean_abs"], scores_l1["mean_abs"],
-                r"Mean $|z_k|$", "Per-dim magnitude", embed_dim)
+                r"Mean $|z_k|$", "Per-prefix magnitude", embed_dim)
     _panel_bars(axes_b[0][1], scores_mrl["probe_acc"], scores_l1["probe_acc"],
                 "Classification accuracy", "1D Probe Acc", embed_dim)
     _panel_agreement(axes_b[0][2], scores_mrl,
                      FP_MRL_COLOR, "Method agreement")
     # Row 1
     _panel_bars(axes_b[1][0], scores_mrl["variance"], scores_l1["variance"],
-                "Variance", "Per-dim variance", embed_dim)
-    _panel_linear_acc(axes_b[1][1], eval2_mrl, eval2_l1, eval_prefixes)
+                "Variance", "Per-prefix variance", embed_dim)
+    _panel_linear_acc(axes_b[1][1], eval2_mrl, eval2_l1, eval_prefixes,
+                      res_std_ce=eval2_std_ce)
     _panel_agreement(axes_b[1][2], scores_l1,
                      PREFIX_L1_COLOR, "Method agreement")
 
     # Shared legend for panel (b) — horizontal strip below, mirroring panel (a)
     fig.legend(handles=SHARED_LEGEND_B,
                loc="lower center", bbox_to_anchor=(0.755, 0.06),
-               ncol=2, frameon=True, handlelength=1.4,
+               ncol=3, frameon=True, handlelength=1.4,
                borderpad=0.4, labelspacing=0.3, columnspacing=1.0,
                fontsize=8)
 
