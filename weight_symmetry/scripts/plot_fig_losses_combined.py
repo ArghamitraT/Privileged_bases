@@ -118,6 +118,11 @@ SYNTH_PCA_MODELS = [
     ("prefix_l1_mse",    PREFIX_L1_LABEL, PREFIX_L1_COLOR, "-",  1.8),
     ("nonuniform_l2",    r"NU-$\ell_2$",  L2_COLOR,        "-",  1.8),
 ]
+# fig (b) angle-to-PCA: FP-MRL and S-MRL only
+ANGLE_PCA_MODELS = [
+    ("std_mrl_mse",      "S-MRL", MRL_COLOR,    "-", 1.8),
+    ("fp_mrl_mse_ortho", "FP-MRL", FP_MRL_COLOR, "-", 1.8),
+]
 SYNTH_FISHER_MODELS = [
     ("fisher",           "Unordered",     LAE_COLOR,       "--", 1.0),
     ("fp_fisher",        "FP-MRL",        FP_MRL_COLOR,    "-",  1.8),
@@ -145,6 +150,10 @@ SHARED_LEGEND_HANDLES = [
     Line2D([0], [0], color=PREFIX_L1_COLOR, ls="-",  lw=1.5, label=PREFIX_L1_LABEL),
     Line2D([0], [0], color=L2_COLOR,        ls="-",  lw=1.5, label=r"NU-$\ell_2$"),
 ]
+
+# Legend for fig (b): same as (a) since paired-cosine panels use all 5 models;
+# the angle column uses only S-MRL and FP-MRL — both are already in the list.
+SHARED_LEGEND_B = SHARED_LEGEND_HANDLES
 
 
 # ==============================================================================
@@ -255,6 +264,29 @@ def _panel_paired(ax, models, data, metric_suffix, n_plot):
     ax.grid(True, linestyle="--", linewidth=0.4, alpha=0.5, color="gray", zorder=1)
 
 
+def _panel_angle(ax, models, data, n_plot):
+    for tag, label, color, ls, lw in models:
+        key = f"{tag}_pca_angles"
+        if key not in data:
+            print(f"  [warn] missing key: {key}")
+            continue
+        mat = data[key].astype(float)
+        if mat.ndim == 1:
+            mat = mat[np.newaxis, :]
+        actual = min(n_plot, mat.shape[1])
+        xs_m   = np.arange(1, actual + 1)
+        mean   = np.nanmean(mat[:, :actual], axis=0)
+        std    = np.nanstd(mat[:, :actual],  axis=0)
+        ax.plot(xs_m, mean, label=label, color=color, ls=ls, lw=lw * 0.85, zorder=3)
+        if mat.shape[0] > 1:
+            ax.fill_between(xs_m, mean - std, mean + std,
+                            alpha=0.15, color=color, zorder=2)
+
+    ax.set_xlim(0, n_plot + 0.5)
+    ax.set_ylim(0, 90)
+    ax.grid(True, linestyle="--", linewidth=0.4, alpha=0.5, color="gray", zorder=1)
+
+
 # ==============================================================================
 # Main
 # ==============================================================================
@@ -312,19 +344,15 @@ def main():
     apply_style()
 
     fig = plt.figure(figsize=(13.5, 5.2))
-    # Both gridspecs use identical panel width and wspace so the row labels
-    # and y-axis titles sit at the same visual offset from the panel edges
-    # in (a) and (b).
-    gs_a = fig.add_gridspec(2, 2, left=0.06, right=0.45,
-                             wspace=0.42, hspace=0.55, top=0.91, bottom=0.20)
-    gs_b = fig.add_gridspec(2, 2, left=0.54, right=0.93,
-                             wspace=0.42, hspace=0.55, top=0.91, bottom=0.20)
+    # Match plot_fig_combined.py; (a) shifted slightly right so the dataset
+    # row label has clearance from the y-axis title.
+    gs_a = fig.add_gridspec(2, 2, left=0.07, right=0.43,
+                             wspace=0.34, hspace=0.52, top=0.91, bottom=0.20)
+    gs_b = fig.add_gridspec(2, 3, left=0.52, right=0.99,
+                             wspace=0.38, hspace=0.52, top=0.91, bottom=0.20)
 
     axes_a = [[fig.add_subplot(gs_a[r, c]) for c in range(2)] for r in range(2)]
-    axes_b = [[fig.add_subplot(gs_b[r, c]) for c in range(2)] for r in range(2)]
-
-    fig.text(0.05, 0.97, "(a)", fontsize=9, fontweight="bold", va="top")
-    fig.text(0.53, 0.97, "(b)", fontsize=9, fontweight="bold", va="top")
+    axes_b = [[fig.add_subplot(gs_b[r, c]) for c in range(3)] for r in range(2)]
 
     # ── fig (a) losses ──────────────────────────────────────────────────────
     loss_panels = [
@@ -335,7 +363,8 @@ def main():
     ]
     col_titles_a = ["MSE / PCA models", "Fisher / LDA models"]
     row_labels   = ["Synthetic Data", "Fashion-MNIST"]
-    panel_labels = [["(i)", "(iii)"], ["(ii)", "(iv)"]]
+    panel_labels_a = [["(i)", "(iii)"], ["(ii)", "(iv)"]]
+    panel_labels_b = [["(i)", "(iii)", "(v)"], ["(ii)", "(iv)", "(vi)"]]
 
     for row, col, models, cap in loss_panels:
         ax = axes_a[row][col]
@@ -346,41 +375,78 @@ def main():
         if row == 0:
             ax.set_title(col_titles_a[col])
         if col == 0:
-            ax.annotate(row_labels[row], xy=(-0.28, 0.5),
+            ax.annotate(row_labels[row], xy=(-0.32, 0.5),
                         xycoords="axes fraction",
                         fontsize=9, rotation=90, va="center", ha="center",
                         fontweight="bold")
-        ax.text(-0.08, 1.02, panel_labels[row][col],
+        ax.text(-0.08, 1.02, panel_labels_a[row][col],
                 transform=ax.transAxes, fontsize=9, fontweight="bold",
                 va="bottom", ha="left", zorder=5)
         ax.set_xlim(1, cap)
 
-    # ── fig (b) paired cosine ───────────────────────────────────────────────
-    paired_panels = [
-        (0, 0, SYNTH_PCA_MODELS,    synth_data,    "pca_paired", 50),
-        (0, 1, SYNTH_FISHER_MODELS, synth_fisher,  "lda_paired", 19),
-        (1, 0, FMNIST_PCA_MODELS,   fmnist_data,   "pca_paired", 32),
-        (1, 1, FMNIST_FISHER_MODELS,fmnist_fisher, "lda_paired",  9),
+    # ── fig (b) paired cosine (col 0) + angle to PCA (col 1) + LDA (col 2) ──
+    # col 0: PCA paired (synth row + fmnist row)
+    paired_pca_panels = [
+        (0, SYNTH_PCA_MODELS,  synth_data,  "pca_paired", 50),
+        (1, FMNIST_PCA_MODELS, fmnist_data, "pca_paired", 32),
     ]
-    col_titles_b = ["Paired cos. to PCA", "Paired cos. to LDA"]
-    for row, col, models, data, metric, n_plot in paired_panels:
-        ax = axes_b[row][col]
+    # col 2: LDA paired
+    paired_lda_panels = [
+        (0, SYNTH_FISHER_MODELS,  synth_fisher,  "lda_paired", 19),
+        (1, FMNIST_FISHER_MODELS, fmnist_fisher, "lda_paired",  9),
+    ]
+    # col 1: angle to PCA, FP-MRL and S-MRL only
+    angle_panels = [
+        (0, synth_data,  50),
+        (1, fmnist_data, 32),
+    ]
+    col_titles_b = ["Angle to PCA", "Paired cos. to PCA", "Paired cos. to LDA"]
+
+    for row, data_src, n_plot in angle_panels:
+        ax = axes_b[row][0]
+        _panel_angle(ax, ANGLE_PCA_MODELS, data_src, n_plot)
+        ax.set_xlabel("Prefix size $k$")
+        ax.set_ylabel("Mean principal angle (°)")
+        if row == 0:
+            ax.set_title(col_titles_b[0])
+        ax.annotate(row_labels[row], xy=(-0.34, 0.5),
+                    xycoords="axes fraction",
+                    fontsize=9, rotation=90, va="center", ha="center",
+                    fontweight="bold")
+        ax.text(-0.08, 1.02, panel_labels_b[row][0],
+                transform=ax.transAxes, fontsize=9, fontweight="bold",
+                va="bottom", ha="left", zorder=5)
+
+    for row, models, data, metric, n_plot in paired_pca_panels:
+        ax = axes_b[row][1]
         _panel_paired(ax, models, data, metric, n_plot)
         ax.set_xlabel("Prefix size $k$")
         ax.set_ylabel("Paired cos. sim.")
         if row == 0:
-            ax.set_title(col_titles_b[col])
-        if col == 0:
-            ax.annotate(row_labels[row], xy=(-0.28, 0.5),
-                        xycoords="axes fraction",
-                        fontsize=9, rotation=90, va="center", ha="center",
-                        fontweight="bold")
-        ax.text(-0.08, 1.02, panel_labels[row][col],
+            ax.set_title(col_titles_b[1])
+        ax.text(-0.08, 1.02, panel_labels_b[row][1],
                 transform=ax.transAxes, fontsize=9, fontweight="bold",
                 va="bottom", ha="left", zorder=5)
 
+    for row, models, data, metric, n_plot in paired_lda_panels:
+        ax = axes_b[row][2]
+        _panel_paired(ax, models, data, metric, n_plot)
+        ax.set_xlabel("Prefix size $k$")
+        ax.set_ylabel("Paired cos. sim.")
+        if row == 0:
+            ax.set_title(col_titles_b[2])
+        ax.text(-0.08, 1.02, panel_labels_b[row][2],
+                transform=ax.transAxes, fontsize=9, fontweight="bold",
+                va="bottom", ha="left", zorder=5)
+
+    # Separate legends matching plot_fig_combined.py.
     fig.legend(handles=SHARED_LEGEND_HANDLES,
-               loc="lower center", bbox_to_anchor=(0.5, 0.04),
+               loc="lower center", bbox_to_anchor=(0.24, 0.06),
+               ncol=5, frameon=True, handlelength=1.4,
+               borderpad=0.4, labelspacing=0.3, columnspacing=1.0,
+               fontsize=8)
+    fig.legend(handles=SHARED_LEGEND_B,
+               loc="lower center", bbox_to_anchor=(0.755, 0.06),
                ncol=5, frameon=True, handlelength=1.4,
                borderpad=0.4, labelspacing=0.3, columnspacing=1.0,
                fontsize=8)
