@@ -1,0 +1,45 @@
+{
+  "sources": [
+    {
+      "condition": "mrl_vae",
+      "beta": 1,
+      "seed": 0,
+      "training_log": "/home/argha/Mat_embedding/files/results/exprmnt_2026_10_13__21_22_10/conditions/mrl_vae/seed_0/exprmnt_2026_10_13__21_43_39/mrl_beta_1_seed_0/training.jsonl"
+    },
+    {
+      "condition": "mrl_vae",
+      "beta": 1,
+      "seed": 1,
+      "training_log": "/home/argha/Mat_embedding/files/results/exprmnt_2026_10_13__21_22_10/conditions/mrl_vae/seed_1/exprmnt_2026_10_14__00_07_51/mrl_beta_1_seed_1/training.jsonl"
+    },
+    {
+      "condition": "mrl_vae",
+      "beta": 1,
+      "seed": 2,
+      "training_log": "/home/argha/Mat_embedding/files/results/exprmnt_2026_10_13__21_22_10/conditions/mrl_vae/seed_2/exprmnt_2026_10_14__02_30_53/mrl_beta_1_seed_2/training.jsonl"
+    },
+    {
+      "condition": "mrl_beta_vae",
+      "beta": 4,
+      "seed": 0,
+      "training_log": "/home/argha/Mat_embedding/files/results/exprmnt_2026_10_13__21_22_10/conditions/mrl_beta_vae/seed_0/exprmnt_2026_10_13__21_43_39/mrl_beta_4_seed_0/training.jsonl"
+    },
+    {
+      "condition": "mrl_beta_vae",
+      "beta": 4,
+      "seed": 1,
+      "training_log": "/home/argha/Mat_embedding/files/results/exprmnt_2026_10_13__21_22_10/conditions/mrl_beta_vae/seed_1/exprmnt_2026_10_14__00_07_51/mrl_beta_4_seed_1/training.jsonl"
+    },
+    {
+      "condition": "mrl_beta_vae",
+      "beta": 4,
+      "seed": 2,
+      "training_log": "/home/argha/Mat_embedding/files/results/exprmnt_2026_10_13__21_22_10/conditions/mrl_beta_vae/seed_2/exprmnt_2026_10_14__02_30_53/mrl_beta_4_seed_2/training.jsonl"
+    }
+  ],
+  "measurement": "Per-image training losses averaged over the batches in each epoch; model weights change during the epoch.",
+  "reconstruction_nll": "Mean of ten prefix reconstruction losses; each sums Bernoulli NLL over all 4096 pixels.",
+  "kl": "Full-posterior KL, before beta weighting; calculated once per image.",
+  "units": "nats per image",
+  "smoothing": "none"
+}

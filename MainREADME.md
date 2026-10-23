@@ -3,6 +3,15 @@
 ## Goal
 Explore whether Matryoshka Representation Learning (MRL) increases embedding interpretability.
 
+## New Project: NonLinearPB
+
+The new project is **NonLinearPB**, located at:
+```
+/home/argha/Mat_embedding/code/NonLinearPB/
+```
+
+Project details will be maintained in **[NonLinearPB/NonLinearPBREADME.md](NonLinearPB/NonLinearPBREADME.md)** inside that folder. This file (`MainREADME.md`) remains the reference for shared project norms.
+
 ## Meeting / Presentation Files
 
 Any file prepared for a meeting (slides, summary notes, figures, `.md` briefs) goes to:
@@ -54,6 +63,7 @@ Use a descriptive filename with the date, e.g. `2026_04_20_weekly_sync.md`.
 | 12 | `exp12_vector_learned_p.py` | MRL vs ScalarLearnedPrefixLp vs VectorLearnedPrefixLp (p per dim) |
 | 13 | `exp13_mrl_cd34_supervised.py` | Supervised MRL on CD34 HSPCs — prefix clustering vs SEACells baseline |
 | 14 | `exp14_two_eval_compare.py` | Two-evaluation comparison (fresh LR vs trained W) — MNIST or CD34 via `--dataset` |
+| NonLinearPB R0 | `NonLinearPB/NonLinearPBExperiments/experiments/dsprites_vae_reproduction.py` | dSprites VAE / β-VAE reproduction with the Higgins disentanglement metric |
 
 ### Quick-start (common run commands)
 ```bash

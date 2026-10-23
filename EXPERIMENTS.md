@@ -938,3 +938,35 @@ CD34_N_HVG     = 2000                    # HVGs as input features → input_dim=
 MNIST_EMBED_DIMS = [16]
 MNIST_EPOCHS     = 20
 ```
+# NonLinearPB R0 — dSprites VAE / β-VAE reproduction
+
+**Purpose:** Establish unsupervised VAE (β=1) and β-VAE (β=4) baselines before task-specific MRL. Compare the Higgins held-fixed-factor disentanglement metric against Figure 5: 61.58% and 99.23%, respectively. A short trial validates the pipeline and is not a numerical reproduction claim.
+
+**Plan:** [Detailed reproduction pre-plan](NonLinearPB/plans/dsprites_task_specific_mrl_experiment_plan_AEOLUS.md).
+
+**Code:** `NonLinearPB/NonLinearPBExperiments/experiments/dsprites_vae_reproduction.py`.
+
+**Environment:** `mrl_env_cuda12`.
+
+**Inputs:** Existing dSprites archive at `/home/argha/Mat_embedding/data/dsprites/dsprites_ndarray_co1sh3sc6or40x32y32_64x64.npz`. Unsupervised training uses all images; labels are used only by the frozen-encoder metric. The CONFIG block owns the full settings and documents choices omitted by the paper.
+
+**How to run from `code/`:**
+
+```bash
+conda activate mrl_env_cuda12
+bash NonLinearPB/NonLinearPBExperiments/scripts/run_dsprites_seed0_tmux.sh
+# Monitor the detached one-seed, 100-epoch, two-GPU pilot:
+tmux attach -t dsprites-seed0-100ep
+python NonLinearPB/NonLinearPBExperiments/tests/run_tests.py
+python NonLinearPB/NonLinearPBExperiments/experiments/dsprites_vae_reproduction.py --fast
+python NonLinearPB/NonLinearPBExperiments/experiments/dsprites_vae_reproduction.py --trial --epochs 2 --seeds 0 --device cuda:0
+python NonLinearPB/NonLinearPBExperiments/experiments/dsprites_vae_reproduction.py --trial --untrained-only --seeds 0 --device cuda:0
+python NonLinearPB/NonLinearPBExperiments/experiments/dsprites_vae_reproduction.py --benchmark --device cuda:0
+python NonLinearPB/NonLinearPBExperiments/experiments/dsprites_vae_reproduction.py
+```
+
+**Evaluation:** Freeze the encoder; average absolute differences of posterior means over pairs with one of X, Y, scale, or rotation fixed. Fit a linear softmax classifier using metric training/validation examples and test on 5,000 separately sampled metric examples. Report raw scores, all-score mean/SD, model-seed variability, and the best-half filtered statistic separately. The paper's ± convention is unspecified.
+
+An untrained VAE is evaluated once per model seed by default, with identical metric settings and a check that encoder/decoder parameters remain unchanged. `--untrained-only` runs this control without VAE optimization; `--skip-untrained` omits it. `--classifier-epochs` overrides the metric classifier cap. Compare scalar scores alongside reconstruction/traversal figures; the metric can score highly for mixed-factor representations.
+
+**Outputs:** Timestamped folders under `/home/argha/Mat_embedding/files/results/`; `--fast`, `--trial`, and `--benchmark` go under `test_runs/`. Save config/environment/checksum, full code snapshot, final and periodic model/optimizer/RNG checkpoints, training logs and curves, latent means, metric features, classifier checkpoints and confusion matrices, reconstruction/traversal figures, score summaries, status, and runtime. `--output-root` supports explicit alternate output locations. GPU trials require device access; use `--device cpu` only when intentionally running on CPU.

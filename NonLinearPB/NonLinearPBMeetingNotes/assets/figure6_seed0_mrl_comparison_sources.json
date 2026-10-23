@@ -1,0 +1,16 @@
+{
+  "beta_vae": {
+    "output": "/home/argha/Mat_embedding/code/NonLinearPB/NonLinearPBMeetingNotes/assets/figure6_seed0_mrl_beta_vae_versus_beta_vae.png",
+    "left": "/home/argha/Mat_embedding/files/results/exprmnt_2026_10_13__21_22_10/figure6/matryoshka/seed_0/figure6_A_beta_vae_2026_10_13__23_46_09.png",
+    "right": "/home/argha/Mat_embedding/files/results/exprmnt_2026_10_13__21_22_10/figure6/ordinary/seed_0/figure6_A_beta_vae_2026_10_13__21_43_21.png",
+    "seed": 0,
+    "operation": "Unchanged single-panel PNGs placed side by side; no rescaling of data or coordinate reordering."
+  },
+  "vae": {
+    "output": "/home/argha/Mat_embedding/code/NonLinearPB/NonLinearPBMeetingNotes/assets/figure6_seed0_mrl_vae_versus_vae.png",
+    "left": "/home/argha/Mat_embedding/files/results/exprmnt_2026_10_13__21_22_10/figure6/matryoshka/seed_0/figure6_B_vae_2026_10_13__23_46_09.png",
+    "right": "/home/argha/Mat_embedding/files/results/exprmnt_2026_10_13__21_22_10/figure6/ordinary/seed_0/figure6_B_vae_2026_10_13__21_43_21.png",
+    "seed": 0,
+    "operation": "Unchanged single-panel PNGs placed side by side; no rescaling of data or coordinate reordering."
+  }
+}
