@@ -113,6 +113,58 @@ def mrl_vae_loss(model, x, beta, *, backward=False):
     return reconstruction + beta * kl, reconstruction, kl, coordinates, prefix_losses
 
 
+class PrefixHeads(nn.Module):
+    """One linear head R^k -> R^C per prefix k = 1..d (supervised MRL)."""
+
+    def __init__(self, latent_dim, classes):
+        super().__init__()
+        self.heads = nn.ModuleList(nn.Linear(k, classes) for k in range(1, latent_dim + 1))
+
+    def forward(self, z):
+        """(B, d) -> (d, B, C): prefix-k logits read only z[:, :k]."""
+        return torch.stack([head(z[:, :k]) for k, head in enumerate(self.heads, 1)])
+
+
+def prefix_masks(latent_dim, device):
+    """(d, d) 0/1 rows; row k-1 keeps the first k coordinates."""
+    arange = torch.arange(latent_dim, device=device)
+    return (arange[None, :] < arange[:, None] + 1).float()
+
+
+def mrl_pretrain_loss(model, x, beta, heads=None, labels=None, lambda_sup=0.0, ln_classes=1.0):
+    """Batched all-prefix objective: mean prefix BCE + beta * full KL + lambda * mean CE / ln C.
+
+    Same reconstruction term as mrl_vae_loss (one shared sample, every masked
+    prefix, mean of per-prefix scalar BCE), but all ten prefixes go through the
+    decoder as one (d * B) batch. beta == 0 is deterministic: z = mu, no KL.
+    """
+    mean, logvar = model.encode(x)
+    if beta > 0:
+        z = mean + torch.randn_like(mean) * torch.exp(0.5 * logvar)
+        coordinates = posterior_kl(mean, logvar)
+    else:
+        z, coordinates = mean, torch.zeros_like(mean[0])
+    d = z.shape[1]
+    logits = model.decoder((z[None] * prefix_masks(d, z.device)[:, None]).reshape(-1, d))
+    bce = F.binary_cross_entropy_with_logits(
+        logits, x.repeat(d, 1), reduction="none").sum(dim=1)
+    prefix_recon = bce.reshape(d, -1).mean(dim=1)
+    kl = coordinates.sum()
+    loss = prefix_recon.mean() + beta * kl
+    out = {"recon": prefix_recon.mean(), "prefix_recon": prefix_recon, "kl": kl,
+           "coordinate_kl": coordinates}
+    if heads is not None:
+        head_logits = heads(z)
+        ce = F.cross_entropy(head_logits.reshape(-1, head_logits.shape[-1]),
+                             labels.repeat(d), reduction="none").reshape(d, -1).mean(dim=1)
+        sup = ce.mean() / ln_classes
+        loss = loss + lambda_sup * sup
+        out.update(sup=sup, prefix_ce=ce,
+                   prefix_acc=(head_logits.argmax(-1) == labels[None]).float().mean(dim=1))
+    out["loss"] = loss
+    return out
+
+
 def model_from_config(config):
     """Restore architecture options; old checkpoints retain the original defaults."""
     return VAE(config["latent_dim"], config["hidden_dim"],

@@ -1,0 +1,214 @@
+<title>__TITLE__</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Lab viewer: sticky control bar (view + epoch slider), then one panel per seed, each with its own colour bar. */
+:root {
+  --bg: #f3f4f6; --surface: #ffffff; --ink: #1b1f27; --muted: #5d6573; --line: #d9dde3;
+  --accent: #2f5fd0; --accent-ink: #ffffff; --plate: #f7f7f7;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111318; --surface: #191c23; --ink: #e6e8ec; --muted: #9aa2b1; --line: #2c313b;
+    --accent: #7ea2ff; --accent-ink: #0d1120; --plate: #2a2e36; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111318; --surface: #191c23; --ink: #e6e8ec; --muted: #9aa2b1; --line: #2c313b;
+  --accent: #7ea2ff; --accent-ink: #0d1120; --plate: #2a2e36; color-scheme: dark;
+}
+body { background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 14px; line-height: 1.5; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--surface); }
+.wrap { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 20px 40px; max-width: 1640px; margin: 0 auto; }
+header h1 { font-size: 1.35rem; font-weight: 600; margin: 0 0 4px; text-wrap: balance; }
+header p { margin: 0 0 4px; color: var(--muted); max-width: 90ch; }
+header code { font-family: var(--mono); font-size: 0.92em; }
+.bar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+  margin-block: 16px; padding: 12px 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; }
+.seg { display: inline-flex; align-items: center; gap: 8px; }
+.seg > span { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.seg .btns { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { font: inherit; font-weight: 500; padding: 6px 14px; border: 0; background: transparent; color: var(--ink); cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+.seg button:focus-visible, .play:focus-visible, input[type=range]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.epoch { display: flex; align-items: center; gap: 12px; flex: 1 1 380px; min-width: 0; }
+.epoch label { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.epoch output { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 1.1rem; font-weight: 500; min-width: 3ch; }
+.slider { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+input[type=range] { width: 100%; accent-color: var(--accent); margin: 0; }
+.ticks { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 0.68rem; color: var(--muted); padding-inline: 2px; }
+.play { font: inherit; font-weight: 500; padding: 6px 14px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--ink); cursor: pointer; }
+.hint { font-size: 0.78rem; color: var(--muted); }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 640px), 1fr)); gap: 16px; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 12px 10px; min-width: 0; }
+.panel h2 { font-size: 0.95rem; font-weight: 600; margin: 0 0 8px; display: flex; justify-content: space-between; gap: 8px; }
+.panel h2 span { font-family: var(--mono); font-weight: 400; color: var(--muted); font-size: 0.8rem; }
+.fig { display: grid; grid-template-columns: 4.2em minmax(0, 1fr) 3.6em; column-gap: 6px; }
+.cols { grid-column: 2; display: grid; grid-template-columns: repeat(__NCOL__, 1fr); font-family: var(--mono); font-size: clamp(0.45rem, 0.8vw, 0.62rem); color: var(--muted); text-align: center; margin-bottom: 3px; }
+.cols span:first-child { color: var(--ink); }
+.rows { grid-column: 1; display: grid; grid-template-rows: repeat(4, 1fr); font-family: var(--mono); font-size: 0.62rem; color: var(--muted); }
+.rows span { display: flex; align-items: center; justify-content: flex-end; text-align: right; line-height: 1.15; }
+.plate { grid-column: 2; background: var(--plate); border-radius: 4px; overflow: hidden; line-height: 0; position: relative; }
+.ov { position: absolute; inset: 0; display: grid; grid-template-columns: repeat(__NCOL__, 1fr); grid-template-rows: repeat(4, 1fr);
+  column-gap: calc(100% * 2 / __W__); row-gap: calc(100% * 2 / 262); pointer-events: none; }
+.ov span { display: flex; align-items: flex-end; justify-content: flex-end; line-height: 1; }
+.ov b { font: 500 clamp(6px, 0.62vw, 9.5px) var(--mono); font-variant-numeric: tabular-nums; color: #1b1f27;
+  background: rgba(255, 255, 255, 0.8); padding: 1px 2px; border-radius: 2px; margin: 1px; }
+.ov.off, .cbar.off { visibility: hidden; }
+.plate img { width: 100%; height: auto; display: block; }
+.cbar { grid-column: 3; display: grid; grid-template-columns: 10px 1fr; column-gap: 4px; }
+.cbar .ramp { border-radius: 2px; background: linear-gradient(to bottom, __GRADIENT__); }
+.cbar.pos .ramp { background: linear-gradient(to bottom, __GRADIENT_POS__); }
+.cbar .lab { display: flex; flex-direction: column; justify-content: space-between; font-family: var(--mono); font-size: 0.6rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+footer { margin-top: 20px; color: var(--muted); font-size: 0.8rem; max-width: 95ch; }
+footer p { margin: 0 0 6px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>__H1__</h1>
+    <p>Run <code>__RUN__</code> (__RUNDESC__). Each cell is the signed change D<sub>k</sub> = decode(z<sub>1:k</sub>) − decode(z<sub>1:k−1</sub>) for one test image.
+      The first column after the input is the reconstruction from z<sub>1</sub> alone (rest of the code zero), in grey. Then the changes 1→2 … __LASTSTEP__:
+      <strong>red = darker, blue = brighter, white = no change.</strong></p>
+    <p><strong>Changes, per tile</strong> (default): every change tile is scaled to its own largest |change|, printed in its corner, so the pattern is visible however small the change.
+      <strong>Changes, shared</strong>: one scale per seed for all its tiles and epochs, so sizes can be compared by eye.
+      <strong>Brighter only</strong>: just the pixels that get brighter, max(D<sub>k</sub>, 0), white → blue; <em>per tile</em> scales each tile to its own largest increase (printed in its corner),
+      <em>shared</em> uses one scale per seed (largest increase over its steps 1→2 … __LASTSTEP__, 4 images and all epochs).
+      <strong>Reconstructions</strong>: the plain prefix reconstructions decode(z<sub>1:k</sub>), k = 1…__D__, in grey.</p>
+  </header>
+
+  <div class="bar" role="group" aria-label="View controls">
+    <div class="seg" role="group" aria-label="View">
+      <span>View</span>
+      <div class="btns">
+        <button type="button" data-mode="tile" aria-pressed="true">Changes · per tile</button>
+        <button type="button" data-mode="seed" aria-pressed="false">Changes · shared</button>
+        <button type="button" data-mode="pos" aria-pressed="false">Brighter · per tile</button>
+        <button type="button" data-mode="posseed" aria-pressed="false">Brighter · shared</button>
+        <button type="button" data-mode="recon" aria-pressed="false">Reconstructions</button>
+      </div>
+    </div>
+    <div class="epoch">
+      <label for="ep">Epoch</label>
+      <output id="ep-out" for="ep">2</output>
+      <div class="slider">
+        <input type="range" id="ep" min="0" max="7" step="1" value="0" aria-describedby="ep-hint">
+        <div class="ticks" aria-hidden="true" id="ticks"></div>
+      </div>
+      <button type="button" class="play" id="play">Play</button>
+    </div>
+    <span class="hint" id="ep-hint">Arrow keys step epochs · V cycles views</span>
+  </div>
+
+  <div class="grid" id="grid"></div>
+
+  <footer>
+    <p>Shared limit = the largest |D<sub>k</sub>| for k = 2…__D__ in that seed, over its 4 images and all 8 epochs. Per tile, a tiny number (e.g. 0.01) means an almost-unchanged
+      image whose pattern is magnified: read the number before the pattern. Grey images (z1 column and the Reconstructions view) are clipped to [0, 1].
+      Decoder output is not clamped. __CAVEAT__</p>
+    <p>Generator: <code>scripts/hier_exp1_prefix_change_html.py</code> from <code>figures/prefix_change/data/</code>. Lossless PNGs are in <code>figures/prefix_change/slider/img/</code>.</p>
+  </footer>
+</div>
+
+<script>
+const DATA = __DATA__;
+const EPOCHS = DATA.epochs;
+const ROWS = DATA.rows;
+const NCOL = DATA.ncol;
+const COLS = {
+  change: ["input", "z1"].concat(Array.from({length: NCOL - 2}, (_, i) => `${i + 1}→${i + 2}`)),
+  recon: ["input", "z1"].concat(Array.from({length: NCOL - 2}, (_, i) => `z1:${i + 2}`)),
+};
+const MODES = ["tile", "seed", "pos", "posseed", "recon"];
+let mode = "tile", idx = 0, timer = null;
+
+const ticks = document.getElementById("ticks");
+EPOCHS.forEach(e => { const s = document.createElement("span"); s.textContent = e; ticks.appendChild(s); });
+
+const grid = document.getElementById("grid");
+const panels = [];
+for (let seed = 0; seed < 5; seed++) {
+  const p = document.createElement("section");
+  p.className = "panel";
+  p.innerHTML = `<h2>Seed ${seed}<span class="tag"></span></h2>
+    <div class="fig">
+      <div class="cols"></div>
+      <div class="rows">${ROWS.map(r => `<span>${r}</span>`).join("")}</div>
+      <div class="plate"><img alt="" width="${DATA.w}" height="${DATA.h}"><div class="ov" aria-hidden="true">${"<span></span>".repeat(ROWS.length * NCOL)}</div></div>
+      <div class="cbar" aria-label="colour scale"><div class="ramp"></div><div class="lab"><span class="hi"></span><span class="mid">0</span><span class="lo"></span></div></div>
+    </div>`;
+  grid.appendChild(p);
+  panels.push({ img: p.querySelector("img"), tag: p.querySelector(".tag"), hi: p.querySelector(".hi"), lo: p.querySelector(".lo"),
+                ov: p.querySelector(".ov"), cells: [...p.querySelectorAll(".ov span")], cols: p.querySelector(".cols"),
+                cbar: p.querySelector(".cbar"), mid: p.querySelector(".mid") });
+}
+
+function fmt(v) { return v >= 0.1 ? v.toFixed(2) : v >= 0.01 ? v.toFixed(3) : v.toExponential(0); }
+
+function render() {
+  const ep = EPOCHS[idx];
+  document.getElementById("ep-out").textContent = String(ep);
+  document.getElementById("ep").value = idx;
+  document.getElementById("ep").setAttribute("aria-valuetext", "epoch " + ep);
+  for (const b of document.querySelectorAll(".seg button")) b.setAttribute("aria-pressed", String(b.dataset.mode === mode));
+  panels.forEach((p, seed) => {
+    const se = `s${seed}_e${String(ep).padStart(3, "0")}`;
+    p.img.src = DATA.img[`${mode}_${se}`];
+    const tl = (mode === "pos" ? DATA.pos_lim : DATA.tile_lim)[se];  // [4 images][NCOL - 2 steps]
+    p.ov.classList.toggle("off", mode !== "tile" && mode !== "pos");
+    p.cbar.classList.toggle("pos", mode === "pos" || mode === "posseed");
+    p.cbar.classList.toggle("off", mode === "recon");
+    p.cols.innerHTML = COLS[mode === "recon" ? "recon" : "change"].map(c => `<span>${c}</span>`).join("");
+    p.cells.forEach((c, j) => {
+      const r = Math.floor(j / NCOL), col = j % NCOL;
+      const v = col >= 2 ? tl[r][col - 2] : null;
+      c.innerHTML = v === null ? "" : mode === "pos" ? `<b>${v > 0 ? "+" + fmt(v) : "0"}</b>` : `<b>±${fmt(v)}</b>`;
+    });
+    p.mid.textContent = mode === "pos" || mode === "posseed" ? "" : "0";
+    if (mode === "pos") {
+      p.hi.textContent = "+max"; p.lo.textContent = "0";
+      p.tag.textContent = `epoch ${ep} · brighter only, per tile`;
+      p.img.alt = `${DATA.model} seed ${seed}, epoch ${ep}: z1 reconstruction and brightness increases per prefix step, each tile scaled to its own maximum`;
+    } else if (mode === "posseed") {
+      const lim = DATA.lim_pos[seed];
+      p.hi.textContent = "+" + fmt(lim); p.lo.textContent = "0";
+      p.tag.textContent = `epoch ${ep} · brighter only, 0 to +${fmt(lim)}`;
+      p.img.alt = `${DATA.model} seed ${seed}, epoch ${ep}: z1 reconstruction and brightness increases per prefix step, shared limit +${fmt(lim)}`;
+    } else if (mode === "tile") {
+      p.hi.textContent = "+max"; p.lo.textContent = "−max";
+      p.tag.textContent = `epoch ${ep} · scale per tile`;
+      p.img.alt = `${DATA.model} seed ${seed}, epoch ${ep}: z1 reconstruction and prefix-change maps, each tile scaled to its own maximum`;
+    } else if (mode === "recon") {
+      p.tag.textContent = `epoch ${ep} · reconstructions`;
+      p.img.alt = `${DATA.model} seed ${seed}, epoch ${ep}: input and prefix reconstructions z1 to z1:${NCOL - 1} for 4 test images`;
+    } else {
+      const lim = DATA.lim[seed];
+      p.hi.textContent = "+" + fmt(lim); p.lo.textContent = "−" + fmt(lim);
+      p.tag.textContent = `epoch ${ep} · ±${fmt(lim)}`;
+      p.img.alt = `${DATA.model} seed ${seed}, epoch ${ep}: z1 reconstruction and prefix-change maps, shared limit ±${fmt(lim)}`;
+    }
+  });
+}
+
+function step(d) { idx = Math.max(0, Math.min(EPOCHS.length - 1, idx + d)); render(); }
+function stop() { clearInterval(timer); timer = null; document.getElementById("play").textContent = "Play"; }
+document.getElementById("ep").addEventListener("input", e => { idx = +e.target.value; render(); });
+document.querySelectorAll(".seg button").forEach(b => b.addEventListener("click", () => { mode = b.dataset.mode; render(); }));
+document.getElementById("play").addEventListener("click", () => {
+  if (timer) return stop();
+  if (idx >= EPOCHS.length - 1) idx = 0;
+  document.getElementById("play").textContent = "Pause";
+  render();
+  timer = setInterval(() => { if (idx >= EPOCHS.length - 1) return stop(); step(1); }, 900);
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "ArrowRight" || e.key === "ArrowUp") { if (e.target.type !== "range") { e.preventDefault(); step(1); } }
+  else if (e.key === "ArrowLeft" || e.key === "ArrowDown") { if (e.target.type !== "range") { e.preventDefault(); step(-1); } }
+  else if (e.key === "v" || e.key === "V") { mode = MODES[(MODES.indexOf(mode) + 1) % MODES.length]; render(); }
+});
+render();
+</script>

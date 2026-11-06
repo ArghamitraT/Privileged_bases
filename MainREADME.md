@@ -64,6 +64,8 @@ Use a descriptive filename with the date, e.g. `2026_04_20_weekly_sync.md`.
 | 13 | `exp13_mrl_cd34_supervised.py` | Supervised MRL on CD34 HSPCs — prefix clustering vs SEACells baseline |
 | 14 | `exp14_two_eval_compare.py` | Two-evaluation comparison (fresh LR vs trained W) — MNIST or CD34 via `--dataset` |
 | NonLinearPB R0 | `NonLinearPB/NonLinearPBExperiments/experiments/dsprites_vae_reproduction.py` | dSprites VAE / β-VAE reproduction with the Higgins disentanglement metric |
+| NonLinearPB P1 | `NonLinearPB/NonLinearPBExperiments/experiments/dsprites_pretrain.py` | MRL source encoders (S_recon, S_posX) × β ∈ {0,1,4}; each job self-analyzes |
+| NonLinearPB T1 | `NonLinearPB/NonLinearPBExperiments/scripts/tier1_target_alignment.py` | Frozen-encoder target alignment: scatter vs learned Q_T, A(1)/O(k,j), prefix probes, nulls |
 
 ### Quick-start (common run commands)
 ```bash
@@ -150,6 +152,9 @@ os.makedirs(run_dir, exist_ok=True)
 1. **Runtime logging** — `save_runtime(run_dir, elapsed)` at end of `main()`.
 2. **Code snapshot** — `save_code_snapshot(run_dir)` copies entire `code/` folder into `run_dir/code_snapshot/`.
 3. **Test file validation** — create/update test file; **read it** to verify coverage; do NOT run it (user runs tests).
+4. **Analysis after every job, and standalone** — each training job analyzes itself as soon as it finishes (same process, results written into that job's folder), and the same analysis can be re-run standalone on saved checkpoints, including combined cross-run plots. Never wait for a whole grid to finish before analyzing. Details: `NonLinearPB/NonLinearPBREADME.md`, section "Analysis: after every job, and standalone".
+
+5. **README.md in every experiment folder** — every `exprmnt_{timestamp}/` folder (full runs; also test runs that are kept) gets a `README.md` with: the **aim** (what question this run answers), **what is being done** (models, settings, what changed versus earlier runs), and a short explanation. Write it at launch; after the run, add **what happened** (outcome, problems, crashes) and **what came next** (links to follow-up folders). Superseded runs say so at the top.
 
 ### Mandatory outputs per run
 - `training_curves_{stamp}.png` — loss-vs-epoch for all trained models. Never omit.

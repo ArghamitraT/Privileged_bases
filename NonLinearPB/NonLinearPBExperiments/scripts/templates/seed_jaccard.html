@@ -1,0 +1,361 @@
+<title>Seed Consistency of Brightening</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Lab viewer: sticky bar (epoch slider + tau bar); chart (MRL vs AE Jaccard), binary maps, pair grids, pixel counts.
+   Everything below the bar is recomputed in the browser from the stored changes whenever epoch or tau moves. */
+:root {
+  --bg: #f3f4f6; --surface: #ffffff; --ink: #1b1f27; --muted: #5d6573; --line: #d9dde3; --grid: #eceef1;
+  --accent: #2f5fd0; --accent-ink: #ffffff;
+  --mrl: #7a3fc2; --ae: #0f8a6a;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111318; --surface: #191c23; --ink: #e6e8ec; --muted: #9aa2b1; --line: #2c313b; --grid: #232731;
+    --accent: #7ea2ff; --accent-ink: #0d1120; --mrl: #b48af0; --ae: #3fc19c; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111318; --surface: #191c23; --ink: #e6e8ec; --muted: #9aa2b1; --line: #2c313b; --grid: #232731;
+  --accent: #7ea2ff; --accent-ink: #0d1120; --mrl: #b48af0; --ae: #3fc19c; color-scheme: dark;
+}
+body { background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 14px; line-height: 1.5; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--surface); }
+.wrap { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 20px 40px; max-width: 1400px; margin: 0 auto; }
+header h1 { font-size: 1.35rem; font-weight: 600; margin: 0 0 4px; text-wrap: balance; }
+header p { margin: 0 0 4px; color: var(--muted); max-width: 95ch; }
+code { font-family: var(--mono); font-size: 0.92em; }
+.bar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+  margin-block: 16px; padding: 12px 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 12px 28px; align-items: center; }
+.ctl { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.lbl { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.ctl output { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 1.1rem; font-weight: 500; min-width: 2ch; }
+.slider { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+input[type=range] { width: 100%; accent-color: var(--accent); margin: 0; }
+.ticks { position: relative; height: 1.1em; font-family: var(--mono); font-size: 0.66rem; color: var(--muted); }
+.ticks.even { display: flex; justify-content: space-between; padding-inline: 2px; height: auto; }
+.ticks span.abs { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+button { font: inherit; font-weight: 500; color: var(--ink); cursor: pointer; }
+.play { padding: 6px 14px; border: 1px solid var(--line); border-radius: 8px; background: transparent; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* tau bar: a colour bar (white -> blue) with the slider on top */
+.taubar { position: relative; height: 14px; border-radius: 3px; border: 1px solid var(--line);
+  background: linear-gradient(to right, #ffffff, __BLUE__); margin-bottom: 3px; }
+.taubar .shade { position: absolute; top: 0; bottom: 0; left: 0; background: repeating-linear-gradient(135deg, rgba(120,124,132,0.55) 0 3px, rgba(120,124,132,0.25) 3px 6px); border-radius: 3px 0 0 3px; }
+.tau-out { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 1.05rem; font-weight: 500; min-width: 6.5ch; }
+.presets { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+.presets button { font-family: var(--mono); font-size: 0.72rem; padding: 2px 7px; border: 1px solid var(--line); border-radius: 6px; background: transparent; }
+.presets button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; min-width: 0; }
+.card h2 { font-size: 1rem; font-weight: 600; margin: 0 0 2px; }
+.card .sub { color: var(--muted); font-size: 0.82rem; margin: 0 0 10px; max-width: 100ch; }
+.legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 0.82rem; margin-bottom: 6px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { display: inline-block; width: 18px; height: 3px; border-radius: 2px; }
+.chartwrap { position: relative; }
+svg.chart { width: 100%; height: auto; display: block; overflow: visible; }
+svg.chart text { font-family: var(--mono); font-size: 11px; fill: var(--muted); }
+.tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+  font-size: 0.78rem; box-shadow: 0 4px 16px rgba(0,0,0,0.12); white-space: nowrap; display: none; }
+.tip b { font-weight: 600; }
+.tip .r { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.tip i { width: 10px; height: 3px; border-radius: 2px; display: inline-block; }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 560px), 1fr)); gap: 16px; }
+.fig { display: grid; grid-template-columns: 3.4em minmax(0, 1fr); column-gap: 6px; }
+.cols { grid-column: 2; display: grid; grid-template-columns: repeat(11, 1fr); font-family: var(--mono); font-size: clamp(0.45rem, 0.85vw, 0.64rem); color: var(--muted); text-align: center; margin-bottom: 3px; }
+.rows { grid-column: 1; display: grid; grid-template-rows: repeat(5, 1fr); font-family: var(--mono); font-size: 0.66rem; color: var(--muted); }
+.rows span { display: flex; align-items: center; justify-content: flex-end; }
+.plate { grid-column: 2; border-radius: 4px; overflow: hidden; line-height: 0; }
+.plate canvas { width: 100%; height: auto; display: block; image-rendering: pixelated; }
+.key { margin-top: 6px; font-size: 0.75rem; color: var(--muted); display: flex; gap: 14px; flex-wrap: wrap; }
+.key i { display: inline-block; width: 11px; height: 11px; border: 1px solid var(--line); vertical-align: -2px; margin-right: 4px; }
+.steps { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-bottom: 10px; }
+.steps button { padding: 4px 10px; border: 0; background: transparent; font-family: var(--mono); font-size: 0.78rem; }
+.steps button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+table { border-collapse: collapse; font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 0.78rem; }
+th, td { padding: 4px 7px; text-align: right; }
+th { color: var(--muted); font-weight: 500; }
+.pm td { width: 3.4em; text-align: center; border: 2px solid var(--surface); }
+.pm td.diag { color: var(--muted); }
+.tbl { overflow-x: auto; }
+.cnt tbody tr td:first-child, .cnt thead th:first-child { text-align: left; }
+.cnt td { border-top: 1px solid var(--grid); }
+.mtitle { font-weight: 600; font-size: 0.9rem; margin: 0 0 6px; display: flex; align-items: center; gap: 8px; }
+.mtitle i { width: 18px; height: 3px; border-radius: 2px; display: inline-block; }
+footer { margin-top: 8px; color: var(--muted); font-size: 0.8rem; max-width: 100ch; }
+footer p { margin: 0 0 6px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Do seeds brighten the same pixels at the same prefix step?</h1>
+    <p>Test image <strong>ring + stem / stem through</strong> (c1 m0 f0, test #__IDX__), run <code>exprmnt_2026_11_03__15_08_36</code> (lr 6e-5), seeds 0–4.
+      At each step 1:(k−1) → 1:k, a pixel counts as <em>brightened</em> if its reconstruction value rises by more than τ.
+      Seeds are compared with Jaccard = |both brighten| / |either brightens|, over all 10 seed pairs. Move τ and everything below is recomputed.</p>
+  </header>
+
+  <div class="bar" role="group" aria-label="View controls">
+    <div class="ctl">
+      <label class="lbl" for="ep">Epoch</label>
+      <output id="ep-out" for="ep">2</output>
+      <div class="slider">
+        <input type="range" id="ep" min="0" max="4" step="1" value="0">
+        <div class="ticks even" aria-hidden="true" id="ticks"></div>
+      </div>
+      <button type="button" class="play" id="play">Play</button>
+    </div>
+    <div class="ctl">
+      <label class="lbl" for="tau">τ</label>
+      <output class="tau-out" id="tau-out" for="tau">0</output>
+      <div class="slider">
+        <div class="taubar" aria-hidden="true"><div class="shade" id="shade"></div></div>
+        <input type="range" id="tau" min="0" max="1000" step="1" value="0" aria-describedby="tau-hint">
+        <div class="ticks" aria-hidden="true" id="tau-ticks"></div>
+        <div class="presets" id="presets"></div>
+      </div>
+    </div>
+  </div>
+  <p class="sub" id="tau-hint" style="color:var(--muted);font-size:0.78rem;margin:-8px 0 14px">
+    τ bar: increase in pixel value (0 = black, 1 = white), log scale from 0.0001 to 1, far left = exactly 0. Hatched part = increases ignored as “not brightened”.
+    Arrow keys step epochs.</p>
+
+  <section class="card">
+    <h2>Cross-seed Jaccard per prefix step</h2>
+    <p class="sub">Line = mean over the seed pairs; band = min–max over pairs; faint lines = individual pairs. A pair where neither seed brightens any pixel is left out (hover shows how many pairs count).</p>
+    <div class="legend"><span><i style="background:var(--mrl)"></i>MRL</span><span><i style="background:var(--ae)"></i>AE</span></div>
+    <div class="chartwrap"><svg class="chart" id="chart" viewBox="0 0 900 300" role="img" aria-label="Mean cross-seed Jaccard per prefix step for MRL and AE"></svg><div class="tip" id="tip"></div></div>
+  </section>
+
+  <section class="card">
+    <h2>Binary positive-change maps</h2>
+    <p class="sub">Rows are seeds. Columns: the input and the z1 reconstruction (grey, for context), then one map per step: <strong>blue = brightened by more than τ</strong>, white = not.</p>
+    <div class="two" id="maps"></div>
+    <div class="key"><span><i style="background:__BLUE__"></i>δ &gt; τ</span><span><i style="background:#fff"></i>δ ≤ τ</span></div>
+  </section>
+
+  <section class="card">
+    <h2>Pairwise Jaccard at one step</h2>
+    <p class="sub">Seed × seed Jaccard for the selected step at this epoch and τ. Darker = more overlap; n/a = neither seed brightens any pixel.</p>
+    <div class="steps" role="group" aria-label="Step" id="steps"></div>
+    <div class="two" id="pairs"></div>
+  </section>
+
+  <section class="card">
+    <h2>Brightened pixels per step</h2>
+    <p class="sub">Number of the 4096 pixels with δ &gt; τ, per seed.</p>
+    <div class="two" id="counts"></div>
+  </section>
+
+  <footer>
+    <p><strong>Reading note.</strong> At τ = 0 about half of all pixels brighten at every step, most of them black background moving by tiny amounts,
+      and two random half-image sets already overlap with a Jaccard of about 0.35. Raising τ removes these tiny changes. A chance line is planned.
+      AE caveat: AE coordinate order is arbitrary, so the same step in two AE seeds compares unrelated coordinates.</p>
+    <p>Changes are stored at half precision (float16, about 3 significant digits); positive changes too small for float16 are kept as the smallest positive value,
+      so τ = 0 matches the saved results exactly. Data: <code>figures/prefix_change/jaccard/</code> (binary_trajectories.npz with B and delta [epoch, model, seed, 4096, 9];
+      CSVs are for τ = 0). Generators: <code>scripts/hier_exp1_seed_jaccard.py</code>, <code>scripts/hier_exp1_seed_jaccard_html.py</code>.</p>
+  </footer>
+</div>
+
+<script>
+const DATA = __DATA__;
+const EPOCHS = DATA.epochs, MODELS = DATA.models, PAIRS = DATA.pairs, NS = 9, NSEED = 5, NP = 4096, T = 64, GAP = 2;
+const STEP_LBL = Array.from({length: NS}, (_, j) => `${j + 1}→${j + 2}`);
+const NAME = { mrl: "MRL", ae: "AE" };
+const BLUE = DATA.blue;
+let idx = 0, stepSel = 0, timer = null, tau = 0;
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+// ---- decode data: float16 positive changes [E, M, S, NS, NP]; grey uint8 [E, M, S, NP]; x uint8 [NP]
+function b64(s) { const b = atob(s), u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; }
+const H2F = new Float32Array(65536);
+for (let h = 0; h < 65536; h++) {
+  const s = h & 0x8000 ? -1 : 1, e = (h >> 10) & 0x1f, f = h & 0x3ff;
+  H2F[h] = e === 0 ? s * Math.pow(2, -14) * (f / 1024) : e === 31 ? (f ? NaN : s * Infinity) : s * Math.pow(2, e - 15) * (1 + f / 1024);
+}
+const POS16 = new Uint16Array(b64(DATA.pos).buffer);
+const GREY = b64(DATA.grey), X = b64(DATA.x);
+const off = (e, m, s, k) => (((e * MODELS.length + m) * NSEED + s) * NS + k) * NP;
+
+// ---- tau slider: position 0 = exactly 0; 1..1000 = log10 from -4 to 0
+const posToTau = p => p === 0 ? 0 : Math.pow(10, -4 + 4 * (p - 1) / 999);
+const tauToPos = t => t <= 0 ? 0 : Math.max(1, Math.min(1000, Math.round(1 + 999 * (Math.log10(t) + 4) / 4)));
+const PRESETS = [0, 0.001, 0.01, 0.05, 0.1];
+const fmtTau = t => t === 0 ? "0" : t >= 0.1 ? t.toFixed(2) : t >= 0.01 ? t.toFixed(3) : t >= 0.001 ? t.toFixed(4) : t.toExponential(1);
+document.getElementById("presets").innerHTML = PRESETS.map(t => `<button type="button" data-t="${t}">${fmtTau(t)}</button>`).join("");
+document.querySelectorAll("#presets button").forEach(b => b.addEventListener("click", () => { tau = +b.dataset.t; render(); }));
+document.getElementById("tau-ticks").innerHTML = [[0, "0"], [1e-4, "1e-4"], [1e-3, "0.001"], [1e-2, "0.01"], [1e-1, "0.1"], [1, "1"]]
+  .map(([t, l]) => `<span class="abs" style="left:${tauToPos(t) / 10}%">${l}</span>`).join("");
+document.getElementById("tau").addEventListener("input", e => { tau = posToTau(+e.target.value); render(); });
+
+document.getElementById("ticks").innerHTML = EPOCHS.map(e => `<span>${e}</span>`).join("");
+document.getElementById("steps").innerHTML = STEP_LBL.map((l, j) => `<button type="button" data-j="${j}" aria-pressed="${j === 0}">${l}</button>`).join("");
+document.querySelectorAll("#steps button").forEach(b => b.addEventListener("click", () => { stepSel = +b.dataset.j; render(); }));
+
+// ---- containers
+const maps = document.getElementById("maps"), pairsEl = document.getElementById("pairs"), countsEl = document.getElementById("counts");
+const canv = {}, pairTbl = {}, cntTbl = {};
+const SW = 11 * (T + GAP) - GAP, SH = NSEED * (T + GAP) - GAP;
+MODELS.forEach(m => {
+  const d = document.createElement("div");
+  d.innerHTML = `<p class="mtitle"><i style="background:var(--${m})"></i>${NAME[m]}</p>
+    <div class="fig"><div class="cols">${["input", "z1"].concat(STEP_LBL).map(c => `<span>${c}</span>`).join("")}</div>
+    <div class="rows">${[0,1,2,3,4].map(s => `<span>seed ${s}</span>`).join("")}</div>
+    <div class="plate"><canvas width="${SW}" height="${SH}" role="img"></canvas></div></div>`;
+  maps.appendChild(d); canv[m] = d.querySelector("canvas");
+  const p = document.createElement("div");
+  p.innerHTML = `<p class="mtitle"><i style="background:var(--${m})"></i>${NAME[m]}</p><div class="tbl"><table class="pm"></table></div>`;
+  pairsEl.appendChild(p); pairTbl[m] = p.querySelector("table");
+  const c = document.createElement("div");
+  c.innerHTML = `<p class="mtitle"><i style="background:var(--${m})"></i>${NAME[m]}</p><div class="tbl"><table class="cnt"></table></div>`;
+  countsEl.appendChild(c); cntTbl[m] = c.querySelector("table");
+});
+
+// ---- compute for current epoch and tau
+function compute() {
+  const res = {};
+  MODELS.forEach((m, mi) => {
+    const B = [], counts = [];
+    for (let s = 0; s < NSEED; s++) {
+      B.push([]); counts.push([]);
+      for (let k = 0; k < NS; k++) {
+        const o = off(idx, mi, s, k), b = new Uint8Array(NP);
+        let n = 0;
+        for (let p = 0; p < NP; p++) if (H2F[POS16[o + p]] > tau) { b[p] = 1; n++; }
+        B[s].push(b); counts[s].push(n);
+      }
+    }
+    const pj = PAIRS.map(([a, c]) => Array.from({length: NS}, (_, k) => {
+      const A = B[a][k], C = B[c][k];
+      let inter = 0, uni = 0;
+      for (let p = 0; p < NP; p++) { inter += A[p] & C[p]; uni += A[p] | C[p]; }
+      return uni === 0 ? null : inter / uni;
+    }));
+    const sum = { mean: [], min: [], max: [], n: [] };
+    for (let k = 0; k < NS; k++) {
+      const v = pj.map(r => r[k]).filter(x => x !== null);
+      sum.n.push(v.length);
+      sum.mean.push(v.length ? v.reduce((a, b) => a + b, 0) / v.length : null);
+      sum.min.push(v.length ? Math.min(...v) : null);
+      sum.max.push(v.length ? Math.max(...v) : null);
+    }
+    res[m] = { B, counts, pj, sum };
+  });
+  return res;
+}
+
+// ---- chart
+const W = 900, H = 300, L = 46, R = 14, TT = 12, BB = 34;
+const Xp = j => L + (W - L - R) * (j + 0.5) / NS;
+const Yp = v => TT + (H - TT - BB) * (1 - v);
+const svg = document.getElementById("chart");
+const NSs = "http://www.w3.org/2000/svg";
+function mk(tag, attrs, parent = svg) { const e = document.createElementNS(NSs, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); parent.appendChild(e); return e; }
+function path(vals) { let d = "", pen = false; vals.forEach((v, j) => { if (v === null) { pen = false; return; } d += (pen ? "L" : "M") + Xp(j).toFixed(1) + "," + Yp(v).toFixed(1); pen = true; }); return d; }
+
+function drawChart(res) {
+  svg.innerHTML = "";
+  [0, 0.25, 0.5, 0.75, 1].forEach(v => {
+    mk("line", { x1: L, x2: W - R, y1: Yp(v), y2: Yp(v), stroke: css("--grid"), "stroke-width": 1 });
+    mk("text", { x: L - 8, y: Yp(v) + 4, "text-anchor": "end" }).textContent = v.toFixed(2);
+  });
+  STEP_LBL.forEach((l, j) => { mk("text", { x: Xp(j), y: H - 12, "text-anchor": "middle" }).textContent = l; });
+  mk("text", { x: 4, y: TT + 2, "text-anchor": "start" }).textContent = "J";
+  MODELS.forEach(m => {
+    const col = css("--" + m), S = res[m].sum;
+    for (let j = 0; j < NS - 1; j++) if (S.min[j] !== null && S.min[j + 1] !== null)
+      mk("path", { d: `M${Xp(j)},${Yp(S.max[j])}L${Xp(j + 1)},${Yp(S.max[j + 1])}L${Xp(j + 1)},${Yp(S.min[j + 1])}L${Xp(j)},${Yp(S.min[j])}Z`, fill: col, opacity: 0.14 });
+    res[m].pj.forEach(r => mk("path", { d: path(r), fill: "none", stroke: col, "stroke-width": 1, opacity: 0.3 }));
+    mk("path", { d: path(S.mean), fill: "none", stroke: col, "stroke-width": 2, "stroke-linejoin": "round" });
+    S.mean.forEach((v, j) => { if (v !== null) mk("circle", { cx: Xp(j), cy: Yp(v), r: 4, fill: col, stroke: css("--surface"), "stroke-width": 2 }); });
+  });
+  const cross = mk("line", { y1: TT, y2: H - BB, stroke: css("--muted"), "stroke-width": 1, "stroke-dasharray": "3 3", opacity: 0 });
+  const hit = mk("rect", { x: L, y: TT, width: W - L - R, height: H - TT - BB, fill: "transparent" });
+  const tip = document.getElementById("tip");
+  hit.addEventListener("mousemove", e => {
+    const r = svg.getBoundingClientRect(), sx = (e.clientX - r.left) * W / r.width;
+    const j = Math.max(0, Math.min(NS - 1, Math.round((sx - L) / ((W - L - R) / NS) - 0.5)));
+    cross.setAttribute("x1", Xp(j)); cross.setAttribute("x2", Xp(j)); cross.setAttribute("opacity", 1);
+    tip.innerHTML = `<b>Step ${STEP_LBL[j]} · epoch ${EPOCHS[idx]} · τ ${fmtTau(tau)}</b>` + MODELS.map(m => {
+      const S = res[m].sum;
+      const v = S.mean[j] === null ? "n/a" : `${S.mean[j].toFixed(3)} <span style="color:var(--muted)">[${S.min[j].toFixed(2)}–${S.max[j].toFixed(2)}]</span>`;
+      return `<div class="r"><i style="background:var(--${m})"></i>${NAME[m]} ${v} <span style="color:var(--muted)">${S.n[j]}/10 pairs</span></div>`;
+    }).join("");
+    tip.style.display = "block";
+    const px = Xp(j) * r.width / W, tw = tip.offsetWidth;
+    tip.style.left = Math.min(r.width - tw, Math.max(0, px + 12)) + "px";
+    tip.style.top = "8px";
+  });
+  hit.addEventListener("mouseleave", () => { cross.setAttribute("opacity", 0); tip.style.display = "none"; });
+}
+
+function drawMaps(res) {
+  MODELS.forEach((m, mi) => {
+    const cv = canv[m], ctx = cv.getContext("2d"), img = ctx.createImageData(SW, SH), D = img.data;
+    for (let i = 0; i < D.length; i += 4) { D[i] = D[i + 1] = D[i + 2] = 150; D[i + 3] = 255; }
+    const put = (s, c, fn) => {
+      for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+        const o = ((s * (T + GAP) + y) * SW + c * (T + GAP) + x) * 4, [r, g, b] = fn(y * T + x);
+        D[o] = r; D[o + 1] = g; D[o + 2] = b;
+      }
+    };
+    for (let s = 0; s < NSEED; s++) {
+      put(s, 0, p => [X[p], X[p], X[p]]);
+      const go = ((idx * MODELS.length + mi) * NSEED + s) * NP;
+      put(s, 1, p => [GREY[go + p], GREY[go + p], GREY[go + p]]);
+      for (let k = 0; k < NS; k++) { const b = res[m].B[s][k]; put(s, k + 2, p => b[p] ? BLUE : [255, 255, 255]); }
+    }
+    ctx.putImageData(img, 0, 0);
+    cv.setAttribute("aria-label", `${NAME[m]} epoch ${EPOCHS[idx]}, tau ${fmtTau(tau)}: binary brightening maps, 5 seeds by 9 steps`);
+  });
+}
+
+function render() {
+  const ep = EPOCHS[idx];
+  document.getElementById("ep-out").textContent = String(ep);
+  document.getElementById("ep").value = idx;
+  document.getElementById("ep").setAttribute("aria-valuetext", "epoch " + ep);
+  const tp = tauToPos(tau);
+  document.getElementById("tau").value = tp;
+  document.getElementById("tau").setAttribute("aria-valuetext", "tau " + fmtTau(tau));
+  document.getElementById("tau-out").textContent = fmtTau(tau);
+  document.getElementById("shade").style.width = (tp / 10) + "%";
+  document.querySelectorAll("#presets button").forEach(b => b.setAttribute("aria-pressed", String(Math.abs(+b.dataset.t - tau) < 1e-12)));
+  document.querySelectorAll("#steps button").forEach(b => b.setAttribute("aria-pressed", String(+b.dataset.j === stepSel)));
+  const res = compute();
+  drawChart(res);
+  drawMaps(res);
+  MODELS.forEach(m => {
+    const M = Array.from({length: NSEED}, () => Array(NSEED).fill(undefined));
+    PAIRS.forEach(([a, b], i) => { const v = res[m].pj[i][stepSel]; M[a][b] = v; M[b][a] = v; });
+    pairTbl[m].innerHTML = `<tr><th></th>${[0,1,2,3,4].map(s => `<th>s${s}</th>`).join("")}</tr>` +
+      M.map((row, a) => `<tr><th>s${a}</th>${row.map((v, b) => {
+        if (a === b) return `<td class="diag">–</td>`;
+        if (v === null) return `<td>n/a</td>`;
+        return `<td style="background:color-mix(in oklab, var(--${m}) ${Math.round(v * 85)}%, var(--surface));color:${v > 0.5 ? "#fff" : "var(--ink)"}">${v.toFixed(2)}</td>`;
+      }).join("")}</tr>`).join("");
+    cntTbl[m].innerHTML = `<thead><tr><th>seed</th>${STEP_LBL.map(l => `<th>${l}</th>`).join("")}</tr></thead><tbody>` +
+      res[m].counts.map((row, s) => `<tr><td>seed ${s}</td>${row.map(v => `<td>${v}</td>`).join("")}</tr>`).join("") + "</tbody>";
+  });
+}
+
+function step(d) { idx = Math.max(0, Math.min(EPOCHS.length - 1, idx + d)); render(); }
+function stop() { clearInterval(timer); timer = null; document.getElementById("play").textContent = "Play"; }
+document.getElementById("ep").addEventListener("input", e => { idx = +e.target.value; render(); });
+document.getElementById("play").addEventListener("click", () => {
+  if (timer) return stop();
+  if (idx >= EPOCHS.length - 1) idx = 0;
+  document.getElementById("play").textContent = "Pause";
+  render();
+  timer = setInterval(() => { if (idx >= EPOCHS.length - 1) return stop(); step(1); }, 1000);
+});
+document.addEventListener("keydown", e => {
+  if (e.target.type === "range") return;
+  if (e.key === "ArrowRight" || e.key === "ArrowUp") { e.preventDefault(); step(1); }
+  else if (e.key === "ArrowLeft" || e.key === "ArrowDown") { e.preventDefault(); step(-1); }
+});
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
+render();
+</script>

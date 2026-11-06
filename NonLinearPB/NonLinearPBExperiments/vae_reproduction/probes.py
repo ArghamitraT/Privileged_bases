@@ -32,7 +32,11 @@ def _tensors(split, device):
 
 @torch.no_grad()
 def _scores(logits, y):
-    return {"accuracy": float((logits.argmax(1) == y).float().mean()),
+    """Accuracy, cross-entropy, and balanced accuracy (mean recall over classes present in y)."""
+    correct = (logits.argmax(1) == y).float()
+    present = torch.unique(y)
+    recall = torch.stack([correct[y == c].mean() for c in present])
+    return {"accuracy": float(correct.mean()), "balanced_accuracy": float(recall.mean()),
             "ce": float(F.cross_entropy(logits, y))}
 
 

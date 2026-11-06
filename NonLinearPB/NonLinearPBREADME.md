@@ -52,6 +52,30 @@ The [paired launcher](NonLinearPBExperiments/scripts/run_dsprites_comparison_tmu
 
 Attach using the printed `tmux attach -t <session>` command. Detach with Ctrl-b, then d; do not press Ctrl-c in a running job. Closing the terminal leaves the detached job running. Inspect `workflow.log`, the model logs, and `status.json`; a session existing does not imply successful completion. Preserve old sessions and results, and use a new timestamped folder for retraining.
 
+## Analysis: after every job, and standalone
+
+**Every training job must analyze itself as soon as it finishes.** The same process that trained the model runs the analysis right away and writes it into that job's own folder (`<job>/analysis_<stamp>/`). Do not wait for a whole grid of runs to finish before looking at any of them, and do not depend on a separate "wait for the queue, then analyze" step.
+
+**Every analysis must also run standalone** on saved checkpoints: to re-run it after a code change, to analyze old runs, or to make combined plots across runs. Keep the analysis in an importable function (one job in, one folder out) with a thin command-line entry point around it.
+
+Rules:
+
+1. Training success and analysis success are recorded separately (`status.json` and `analysis_status.json`). An analysis error is logged and does not mark training as failed; fix it and re-run standalone.
+2. Re-running writes a new timestamped `analysis_<stamp>/` folder; never overwrite an earlier analysis.
+3. Cross-run comparisons are a separate standalone step that writes `<run-dir>/analysis_combined_<stamp>/`. It can reuse each job's saved analysis without recomputing.
+4. Analysis is part of the job, so it runs inside the job's tmux session and GPU slot.
+
+For dSprites pretraining, see `NonLinearPBExperiments/experiments/dsprites_pretrain.py` (runs `analyze_job` after training; `--no-analysis` skips it) and `NonLinearPBExperiments/scripts/analyze_pretrain.py`:
+
+```bash
+# From code/. Re-analyze all finished jobs of a run, then write combined plots.
+python NonLinearPB/NonLinearPBExperiments/scripts/analyze_pretrain.py --run-dir /path/to/exprmnt_x --device cuda:1
+# Re-analyze selected jobs only.
+python NonLinearPB/NonLinearPBExperiments/scripts/analyze_pretrain.py --run-dir /path/to/exprmnt_x --jobs recon_beta0_seed0
+# Combined plots from each job's newest saved analysis, without recomputing.
+python NonLinearPB/NonLinearPBExperiments/scripts/analyze_pretrain.py --run-dir /path/to/exprmnt_x --combine-only
+```
+
 ## Project aim
 
 Determine whether Matryoshka Representation Learning (MRL) selects a reproducible, objective-specific privileged basis in nonlinear representations, and characterize when it fails to do so.

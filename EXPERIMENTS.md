@@ -970,3 +970,56 @@ python NonLinearPB/NonLinearPBExperiments/experiments/dsprites_vae_reproduction.
 An untrained VAE is evaluated once per model seed by default, with identical metric settings and a check that encoder/decoder parameters remain unchanged. `--untrained-only` runs this control without VAE optimization; `--skip-untrained` omits it. `--classifier-epochs` overrides the metric classifier cap. Compare scalar scores alongside reconstruction/traversal figures; the metric can score highly for mixed-factor representations.
 
 **Outputs:** Timestamped folders under `/home/argha/Mat_embedding/files/results/`; `--fast`, `--trial`, and `--benchmark` go under `test_runs/`. Save config/environment/checksum, full code snapshot, final and periodic model/optimizer/RNG checkpoints, training logs and curves, latent means, metric features, classifier checkpoints and confusion matrices, reconstruction/traversal figures, score summaries, status, and runtime. `--output-root` supports explicit alternate output locations. GPU trials require device access; use `--device cpu` only when intentionally running on CPU.
+
+# NonLinearPB P1 — dSprites MRL source-encoder pretraining
+
+**Purpose:** Train the frozen source encoders for the privileged-basis study: `S_recon` (MRL reconstruction only) and `S_posX` (MRL reconstruction plus nested X-position heads), each at β ∈ {0, 1, 4} (MRL autoencoder, MRL VAE, MRL β-VAE), two seeds. `S_scale` is deferred.
+
+**Plan:** `NonLinearPB/plans/PrivilagedBasisRotation.md` (pretraining specification).
+
+**Code:** `NonLinearPB/NonLinearPBExperiments/experiments/dsprites_pretrain.py` (one job), `scripts/run_dsprites_pretrain.py` (GPU queue, several jobs per GPU), `scripts/run_dsprites_pretrain_tmux.sh` (tmux launcher), `scripts/analyze_pretrain.py` (analysis). Loss: `PrefixHeads` and `mrl_pretrain_loss` in `vae_reproduction/model.py`. Tests: `tests/helper_pretrain.py`.
+
+**Environment:** `mrl_env_cuda12`.
+
+**Inputs:** dSprites archive; shared seed-0 80/10/10 image split. Same MLP β-VAE as R0 (Adagrad 0.01, batch 256, 100 epochs). Loss: mean over all 10 prefixes of BCE + β·KL (full latent, once) + λ·mean-prefix CE / ln C. β = 0 is deterministic (z = μ). λ for S_posX comes from a 10-epoch β = 4 pilot over {10, 30, 100, 300}; λ = 100 confirmed (2026-10-29); record in `<run-dir>/lambda_sup.json`.
+
+**How to run from `code/`:**
+
+```bash
+conda activate mrl_env_cuda12
+bash NonLinearPB/NonLinearPBExperiments/scripts/run_dsprites_pretrain_tmux.sh --stages pilot recon
+bash NonLinearPB/NonLinearPBExperiments/scripts/run_dsprites_pretrain_tmux.sh --stages posx --lambda-sup 100 --run-dir /path/to/exprmnt_x
+python NonLinearPB/NonLinearPBExperiments/experiments/dsprites_pretrain.py --fast --objective posx --beta 4 --lambda-sup 100 --device cuda:0
+python NonLinearPB/NonLinearPBExperiments/scripts/analyze_pretrain.py --run-dir /path/to/exprmnt_x --combine-only
+python NonLinearPB/NonLinearPBExperiments/tests/run_tests.py
+```
+
+**Evaluation (automatic after every job; also standalone):** on validation posterior means: reconstruction per prefix; active dimensions by variance ratio, per-coordinate KL (β > 0), and reconstruction gain per added coordinate; factor-by-coordinate η²; native-order prefix linear probes (accuracy, and R² for X, Y, scale) for shape, scale, rotation (hearts), X, Y; single-model Figure 6 with per-coordinate percentile traversals.
+
+**Outputs:** `/home/argha/Mat_embedding/files/results/exprmnt_<stamp>/<objective>_beta<β>_seed<s>[_lam<λ>]/` with checkpoints, `training.jsonl`, training curves, `results_summary.txt`, `status.json`, and `analysis_<stamp>/`; per-job queue logs in `logs/`; combined plots in `analysis_combined_<stamp>/`. `--fast` runs go under `test_runs/`.
+
+# NonLinearPB T1 — Frozen-encoder target alignment
+
+**Purpose:** For each frozen P1 encoder (S_recon, S_posX × β × seed), find target-relevant directions two ways (between-class scatter; learned orthogonal Q_T with nested heads) and measure where they sit in the source coordinate order (A(1), O(k, j), depth, random-subspace nulls) and how accessible the target is from short prefixes (linear probes in original, scatter, learned and random bases). No encoder training.
+
+**Plan:** `NonLinearPB/plans/FrozenEncoderTargetAlignmentExp.md` (decisions in Section 0).
+
+**Code:** `NonLinearPB/NonLinearPBExperiments/scripts/tier1_target_alignment.py`, `scripts/run_tier1_tmux.sh`. Uses `vae_reproduction/bases.py` (orthogonal rotation, principal angles) and `vae_reproduction/probes.py` (linear probe, now also balanced accuracy). Tests: `tests/helper_tier1.py`.
+
+**Environment:** `mrl_env_cuda12`.
+
+**Inputs:** finished P1 jobs (`checkpoint_final.pt`, `split_manifest.npz`, newest `analysis_*` for activity masks). Targets: α ∈ {0, 30, 60, 90}° position-angle bins (6 equal-frequency classes from train quantiles), scale (6), shape (3).
+
+**How to run from `code/`:**
+
+```bash
+conda activate mrl_env_cuda12
+bash NonLinearPB/NonLinearPBExperiments/scripts/run_tier1_tmux.sh --run-dir /home/argha/Mat_embedding/files/results/exprmnt_2026_10_29__12_03_09 --betas 0 --gpus 0 1
+python NonLinearPB/NonLinearPBExperiments/scripts/tier1_target_alignment.py --run-dir /path/to/exprmnt_x --jobs recon_beta0_seed0 --smoke --device cuda:0
+python NonLinearPB/NonLinearPBExperiments/scripts/tier1_target_alignment.py --run-dir /path/to/exprmnt_x --betas 0 --combine-only
+python NonLinearPB/NonLinearPBExperiments/tests/run_tests.py
+```
+
+**Evaluation:** validation only (test embeddings cached, not scored until Stage 3). Per job and target: label cut points and class balance; scatter eigenvalues, rank, concentration, A(1), O(k, j), depth (standardized; raw and frequency-weighted as sensitivity); null mean/5–95%/upper tail per convention (all10, variance, recon_gain, kl); prefix balanced accuracy (chance-normalized), k*, ordinal R² for angle targets, in four bases; Q_T fit logs, head accuracies, principal angles to scatter and between restarts; full-probe spread across bases (should be ~0).
+
+**Outputs:** `<run-dir>/<job>/tier1_alignment_<stamp>/` (`tier1.json`, `arrays.npz` with Q_T, null A(1) draws and labels, `embeddings_mu.npz`, `alignment_*.png`, `accessibility_*.png`, `agreement_*.png`, `results_summary.txt`); combined `<run-dir>/tier1_combined_<stamp>/`. `--smoke` folders end in `_smoke` and are never combined.
